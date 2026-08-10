@@ -642,6 +642,9 @@ function selectPage(page) {
   if (page === "users") { loadUsers(); loadGroupOptions(); }
   if (page === "groups") loadGroups();
   if (page === "company-settings") loadCompanySettings();
+  if (page === "register") {
+    document.getElementById("reg-threshold").value = currentUser.default_low_stock_threshold ?? 5;
+  }
   if (page === "companies") { loadCompanies(); loadAllUsers(); }
   if (page === "scan") document.getElementById("scan-barcode").focus();
 }
@@ -836,7 +839,7 @@ document.getElementById("register-form").addEventListener("submit", async e => {
   } else {
     regResult.innerHTML = `<span style="color:var(--ok)">登録しました: ${escapeHtml(name)}</span>`;
     e.target.reset();
-    document.getElementById("reg-threshold").value = 5;
+    document.getElementById("reg-threshold").value = currentUser.default_low_stock_threshold ?? 5;
     regValidateMsg.textContent = "";
   }
 });

@@ -203,9 +203,16 @@ async function createApp(dbConfig, sessionSecret) {
       return res.status(401).json({ message: "ユーザー名またはパスワードが違います" });
     }
     let companyName = null;
+    let defaultThreshold = 5;
     if (user.company_id) {
-      const [c] = await pool.query("SELECT name FROM companies WHERE id = ?", [user.company_id]);
-      companyName = c[0] && c[0].name;
+      const [c] = await pool.query(
+        "SELECT name, default_low_stock_threshold FROM companies WHERE id = ?",
+        [user.company_id]
+      );
+      if (c[0]) {
+        companyName = c[0].name;
+        defaultThreshold = c[0].default_low_stock_threshold;
+      }
     }
     req.session.user = {
       id: user.id,
@@ -214,6 +221,7 @@ async function createApp(dbConfig, sessionSecret) {
       company_id: user.company_id,
       company_name: companyName,
       group_id: user.group_id,
+      default_low_stock_threshold: defaultThreshold,
     };
     res.json(req.session.user);
   });
