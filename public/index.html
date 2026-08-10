@@ -332,8 +332,16 @@
         <form id="register-form" class="form-grid">
           <div class="full">
             <label>バーコード</label>
-            <input id="reg-barcode" required>
+            <div style="display:flex; gap:8px;">
+              <input id="reg-barcode" required style="flex:1;">
+              <button type="button" class="btn secondary" id="reg-lookup-btn" style="white-space:nowrap;">ネットで検索</button>
+            </div>
             <div id="reg-validate-msg" class="msg"></div>
+          </div>
+          <div class="full" id="reg-lookup-panel" style="display:none;">
+            <label>検索結果から選択</label>
+            <select id="reg-lookup-select"></select>
+            <div id="reg-lookup-preview" style="display:flex; gap:12px; margin-top:8px; align-items:flex-start;"></div>
           </div>
           <div class="full">
             <label>商品名</label>
@@ -892,6 +900,61 @@ regBarcodeInput.addEventListener("blur", async () => {
   renderValidateMsg(regValidateMsg, await validateBarcode(barcode));
 });
 
+// --- ネットで商品検索 ---
+let lookupResults = [];
+const lookupPanel = document.getElementById("reg-lookup-panel");
+const lookupSelect = document.getElementById("reg-lookup-select");
+const lookupPreview = document.getElementById("reg-lookup-preview");
+
+function renderLookupPreview() {
+  const item = lookupResults[lookupSelect.value];
+  if (!item) { lookupPreview.innerHTML = ""; return; }
+  lookupPreview.innerHTML = `
+    ${item.image ? `<img src="${escapeHtml(item.image)}" style="width:80px; height:80px; object-fit:contain; border:1px solid var(--border); border-radius:6px;">` : ""}
+    <div style="flex:1; font-size:0.82rem; color:var(--text-muted);">
+      ${item.price ? `<div>参考価格: ${Number(item.price).toLocaleString()}円</div>` : ""}
+      <div>${escapeHtml((item.description || "").slice(0, 140))}</div>
+    </div>
+  `;
+}
+
+document.getElementById("reg-lookup-btn").addEventListener("click", async () => {
+  const barcode = regBarcodeInput.value.trim();
+  if (!barcode) return;
+  const btn = document.getElementById("reg-lookup-btn");
+  btn.disabled = true;
+  btn.textContent = "検索中...";
+  try {
+    const res = await fetch(`${API}/barcode/${encodeURIComponent(barcode)}/lookup`);
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.message || "検索に失敗しました");
+      return;
+    }
+    lookupResults = data;
+    if (!data.length) {
+      alert("該当する商品が見つかりませんでした");
+      lookupPanel.style.display = "none";
+      return;
+    }
+    lookupSelect.innerHTML = data.map((item, i) =>
+      `<option value="${i}">${escapeHtml(item.name)}</option>`
+    ).join("");
+    lookupPanel.style.display = "";
+    renderLookupPreview();
+    document.getElementById("reg-name").value = data[0].name;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "ネットで検索";
+  }
+});
+
+lookupSelect.addEventListener("change", () => {
+  renderLookupPreview();
+  const item = lookupResults[lookupSelect.value];
+  if (item) document.getElementById("reg-name").value = item.name;
+});
+
 document.getElementById("register-form").addEventListener("submit", async e => {
   e.preventDefault();
   const barcode = regBarcodeInput.value.trim();
@@ -914,6 +977,9 @@ document.getElementById("register-form").addEventListener("submit", async e => {
     e.target.reset();
     document.getElementById("reg-threshold").value = currentUser.default_low_stock_threshold ?? 5;
     regValidateMsg.textContent = "";
+    lookupPanel.style.display = "none";
+    lookupPreview.innerHTML = "";
+    lookupResults = [];
   }
 });
 

@@ -113,7 +113,7 @@ async function migrate(pool) {
   }
 }
 
-async function createApp(dbConfig, sessionSecret) {
+async function createApp(dbConfig, sessionSecret, yahooAppId) {
   const app = express();
   app.use(express.json());
   app.use(cors({ origin: true, credentials: true }));
@@ -504,6 +504,33 @@ async function createApp(dbConfig, sessionSecret) {
     });
   });
 
+  // JANコードからYahoo!ショッピングで商品情報を検索（登録時の候補表示用）
+  app.get("/barcode/:barcode/lookup", requireAuth, async (req, res) => {
+    if (!yahooAppId) {
+      return res.status(503).json({ message: "商品検索機能が設定されていません" });
+    }
+    const { barcode } = req.params;
+    try {
+      const url = new URL("https://shopping.yahooapis.jp/ShoppingWebService/V3/itemSearch");
+      url.searchParams.set("appid", yahooAppId);
+      url.searchParams.set("jan_code", barcode);
+      url.searchParams.set("results", "10");
+      const r = await fetch(url);
+      if (!r.ok) return res.status(502).json({ message: "検索サービスへの接続に失敗しました" });
+      const data = await r.json();
+      const items = (data.hits || []).map(h => ({
+        name: h.name,
+        image: (h.image && (h.image.medium || h.image.small)) || null,
+        description: h.description || "",
+        price: h.price,
+        url: h.url,
+      }));
+      res.json(items);
+    } catch (e) {
+      res.status(500).json({ message: "商品検索に失敗しました" });
+    }
+  });
+
   // 商品取得
   app.get("/products/:barcode", requireCompanyMember, async (req, res) => {
     const [rows] = await pool.query("SELECT * FROM products WHERE company_id = ? AND barcode = ?", [
@@ -733,8 +760,9 @@ if (require.main === module) {
     database: process.env.DB_NAME || "inventory_db",
   };
   const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+  const yahooAppId = process.env.YAHOO_APP_ID || null;
 
-  createApp(dbConfig, sessionSecret).then(app => {
+  createApp(dbConfig, sessionSecret, yahooAppId).then(app => {
     if (process.env.HTTPS_KEY && process.env.HTTPS_CERT) {
       const https = require("https");
       https
