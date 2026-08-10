@@ -37,6 +37,39 @@ app.get("/", (req, res) => {
   res.json({ status: "barcode API server running" });
 });
 
+// JAN/EANチェックディジット計算（bodyは12桁=JAN-13用 または 7桁=JAN-8用）
+function calcCheckDigit(body) {
+  const isThirteen = body.length === 12;
+  let sum = 0;
+  for (let i = 0; i < body.length; i++) {
+    const n = Number(body[i]);
+    const weight = isThirteen
+      ? (i % 2 === 0 ? 1 : 3) // JAN-13: 奇数桁×1, 偶数桁×3
+      : (i % 2 === 0 ? 3 : 1); // JAN-8: 奇数桁×3, 偶数桁×1
+    sum += n * weight;
+  }
+  return (10 - (sum % 10)) % 10;
+}
+
+// JAN-8/JAN-13以外（社内独自コード等）はチェック対象外として許可する
+function isValidJAN(barcode) {
+  if (!/^\d{8}$/.test(barcode) && !/^\d{13}$/.test(barcode)) return true;
+  const body = barcode.slice(0, -1);
+  const checkDigit = Number(barcode.slice(-1));
+  return calcCheckDigit(body) === checkDigit;
+}
+
+// バーコードのチェックディジット検証（読み取り前の確認用）
+app.get("/barcode/:barcode/validate", (req, res) => {
+  const { barcode } = req.params;
+  const isJAN = /^\d{8}$/.test(barcode) || /^\d{13}$/.test(barcode);
+  res.json({
+    barcode,
+    isJAN,
+    valid: isValidJAN(barcode),
+  });
+});
+
 // 商品取得
 app.get("/products/:barcode", (req, res) => {
   const { barcode } = req.params;
@@ -55,6 +88,12 @@ app.get("/products/:barcode", (req, res) => {
 app.post("/products", (req, res) => {
   const { barcode, name, stock, location } = req.body;
 
+  if (!isValidJAN(barcode)) {
+    return res.status(400).json({
+      message: "Invalid barcode: check digit mismatch (misread or damaged barcode?)",
+    });
+  }
+
   db.run(
     "INSERT OR REPLACE INTO products (barcode, name, stock, location) VALUES (?, ?, ?, ?)",
     [barcode, name, stock ?? 0, location ?? ""],
@@ -68,6 +107,12 @@ app.post("/products", (req, res) => {
 // スキャン（在庫増減）
 app.post("/scan", (req, res) => {
   const { barcode, diff } = req.body;
+
+  if (!isValidJAN(barcode)) {
+    return res.status(400).json({
+      message: "Invalid barcode: check digit mismatch (misread or damaged barcode?)",
+    });
+  }
 
   db.serialize(() => {
     db.run(
