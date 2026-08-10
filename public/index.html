@@ -182,6 +182,14 @@
   .user-menu .role-badge {
     font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; background: #eef1f6; color: var(--text);
   }
+
+  /* --- 汎用モーダル --- */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 200;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-overlay.hidden { display: none; }
+  #modal-fields label { margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -532,6 +540,19 @@
 </div>
 </div>
 
+<!-- 汎用モーダル（Electronはwindow.prompt()に対応していないため） -->
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="overlay-box" style="width:340px;">
+    <h1 id="modal-title" style="font-size:1rem;"></h1>
+    <div id="modal-fields"></div>
+    <div class="msg ng" id="modal-msg"></div>
+    <div style="display:flex; gap:8px; margin-top:14px;">
+      <button type="button" class="btn secondary" id="modal-cancel" style="flex:1;">キャンセル</button>
+      <button type="button" class="btn" id="modal-ok" style="flex:1;">OK</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = "";
 
@@ -543,6 +564,58 @@ function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
+}
+
+// ================= 汎用モーダル（Electronはwindow.prompt()未対応のため代替） =================
+const modalOverlay = document.getElementById("modal-overlay");
+const modalTitle = document.getElementById("modal-title");
+const modalFields = document.getElementById("modal-fields");
+const modalMsg = document.getElementById("modal-msg");
+const modalOk = document.getElementById("modal-ok");
+const modalCancel = document.getElementById("modal-cancel");
+
+// fields: [{id, label, value, type}]  戻り値: {id: value, ...} または null（キャンセル時）
+function openModal(title, fields) {
+  return new Promise(resolve => {
+    modalTitle.textContent = title;
+    modalMsg.textContent = "";
+    modalFields.innerHTML = fields.map(f => `
+      <label>${escapeHtml(f.label)}
+        <input id="modal-f-${f.id}" type="${f.type || "text"}" value="${escapeHtml(f.value ?? "")}">
+      </label>
+    `).join("");
+    modalOverlay.classList.remove("hidden");
+    const firstInput = document.getElementById(`modal-f-${fields[0].id}`);
+    firstInput.focus();
+    firstInput.select();
+
+    function cleanup(result) {
+      modalOverlay.classList.add("hidden");
+      modalOk.removeEventListener("click", onOk);
+      modalCancel.removeEventListener("click", onCancel);
+      modalFields.removeEventListener("keydown", onKeydown);
+      resolve(result);
+    }
+    function onOk() {
+      const result = {};
+      fields.forEach(f => { result[f.id] = document.getElementById(`modal-f-${f.id}`).value; });
+      cleanup(result);
+    }
+    function onCancel() { cleanup(null); }
+    function onKeydown(e) {
+      if (e.key === "Enter") { e.preventDefault(); onOk(); }
+      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+    }
+    modalOk.addEventListener("click", onOk);
+    modalCancel.addEventListener("click", onCancel);
+    modalFields.addEventListener("keydown", onKeydown);
+  });
+}
+
+// prompt()の簡易置き換え。キャンセル時はnull
+async function promptModal(label, defaultValue = "") {
+  const result = await openModal(label, [{ id: "value", label, value: defaultValue }]);
+  return result ? result.value : null;
 }
 
 const PAGE_TITLES = {
@@ -939,16 +1012,20 @@ document.getElementById("inventory-body").addEventListener("click", async e => {
   }
 
   if (btn.dataset.action === "edit") {
-    const name = prompt("商品名", product.name);
-    if (name === null) return;
-    const location = prompt("保管場所", product.location || "");
-    if (location === null) return;
-    const threshold = prompt("在庫少の閾値", product.low_stock_threshold ?? 5);
-    if (threshold === null) return;
+    const result = await openModal("商品を編集", [
+      { id: "name", label: "商品名", value: product.name },
+      { id: "location", label: "保管場所", value: product.location || "" },
+      { id: "threshold", label: "在庫少の閾値", value: product.low_stock_threshold ?? 5, type: "number" },
+    ]);
+    if (!result) return;
     await fetch(`${API}/products/${encodeURIComponent(barcode)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, location, low_stock_threshold: Number(threshold) }),
+      body: JSON.stringify({
+        name: result.name,
+        location: result.location,
+        low_stock_threshold: Number(result.threshold),
+      }),
     });
     loadInventory();
   }
@@ -1050,7 +1127,7 @@ document.getElementById("users-body").addEventListener("click", async e => {
   }
 
   if (btn.dataset.action === "rename") {
-    const username = prompt("新しいユーザー名", name);
+    const username = await promptModal("新しいユーザー名", name);
     if (!username || username === name) return;
     const res = await fetch(`${API}/admin/users/${id}`, {
       method: "PUT",
@@ -1065,7 +1142,7 @@ document.getElementById("users-body").addEventListener("click", async e => {
   }
 
   if (btn.dataset.action === "reset") {
-    const password = prompt(`「${name}」の新しいパスワード`);
+    const password = await promptModal(`「${name}」の新しいパスワード`);
     if (!password) return;
     await fetch(`${API}/admin/users/${id}`, {
       method: "PUT",
@@ -1128,7 +1205,7 @@ document.getElementById("groups-body").addEventListener("click", async e => {
   }
 
   if (btn.dataset.action === "rename") {
-    const name = prompt("新しいグループ名", btn.dataset.name);
+    const name = await promptModal("新しいグループ名", btn.dataset.name);
     if (!name) return;
     await fetch(`${API}/admin/groups/${id}`, {
       method: "PUT",
@@ -1226,7 +1303,7 @@ document.getElementById("companies-body").addEventListener("click", async e => {
   }
 
   if (btn.dataset.action === "rename") {
-    const name = prompt("新しい会社名", btn.dataset.name);
+    const name = await promptModal("新しい会社名", btn.dataset.name);
     if (!name) return;
     await fetch(`${API}/superadmin/companies/${id}`, {
       method: "PUT",
@@ -1273,7 +1350,7 @@ document.getElementById("all-users-body").addEventListener("click", async e => {
   }
 
   if (btn.dataset.action === "reset") {
-    const password = prompt(`「${name}」の新しいパスワード`);
+    const password = await promptModal(`「${name}」の新しいパスワード`);
     if (!password) return;
     await fetch(`${API}/superadmin/users/${id}`, {
       method: "PUT",
