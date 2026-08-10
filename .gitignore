@@ -2,3 +2,8 @@ node_modules/
 db.sqlite
 *.cpuprofile
 origin/
+dist/
+release/
+release2/
+*.txt
+.claude/

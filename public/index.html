@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>バーコード在庫管理</title>
+<style>
+  :root {
+    --sidebar-bg: #1b2537;
+    --sidebar-fg: #aeb8cc;
+    --sidebar-fg-active: #ffffff;
+    --accent: #3b82f6;
+    --bg: #f4f6fa;
+    --card: #ffffff;
+    --border: #e2e6ef;
+    --text: #1c2333;
+    --text-muted: #6b7385;
+    --ok: #1a7f37;
+    --ng: #d1242f;
+    --warn: #b45309;
+    --warn-bg: #fff7e6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", system-ui, "Hiragino Kaku Gothic ProN", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* --- サイドバー --- */
+  .sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    display: flex;
+    flex-direction: column;
+    padding: 18px 0;
+  }
+  .brand {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #fff;
+    padding: 0 20px 18px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    margin-bottom: 10px;
+  }
+  .brand small { display: block; font-weight: 400; font-size: 0.72rem; color: #7f8bab; margin-top: 2px; }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 20px;
+    cursor: pointer;
+    font-size: 0.92rem;
+    border-left: 3px solid transparent;
+  }
+  .nav-item:hover { background: rgba(255,255,255,0.05); color: #fff; }
+  .nav-item.active {
+    background: rgba(59,130,246,0.15);
+    color: var(--sidebar-fg-active);
+    border-left-color: var(--accent);
+  }
+  .nav-icon { width: 18px; text-align: center; }
+
+  /* --- メイン --- */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .topbar {
+    padding: 16px 28px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .topbar h1 { font-size: 1.1rem; margin: 0; }
+  .topbar .date { color: var(--text-muted); font-size: 0.85rem; }
+  .content { flex: 1; overflow-y: auto; padding: 24px 28px; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* --- カード --- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 20px; }
+  .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+  .stat-card .label { font-size: 0.8rem; color: var(--text-muted); }
+  .stat-card .value { font-size: 1.8rem; font-weight: 700; margin-top: 4px; }
+  .stat-card.danger .value { color: var(--ng); }
+
+  h2 { font-size: 1rem; margin: 0 0 14px; }
+
+  /* --- フォーム --- */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; max-width: 640px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  label { display: block; font-size: 0.82rem; color: var(--text-muted); margin-bottom: 5px; }
+  input {
+    width: 100%;
+    padding: 9px 10px;
+    font-size: 0.95rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--text);
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .btn {
+    padding: 9px 18px;
+    font-size: 0.9rem;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn.secondary { background: #eef1f6; color: var(--text); }
+  .btn.danger { background: #fdeaea; color: var(--ng); }
+  .btn.small { padding: 5px 10px; font-size: 0.8rem; }
+
+  .msg { margin: 8px 0; font-size: 0.85rem; min-height: 1.2em; }
+  .msg.ok { color: var(--ok); }
+  .msg.ng { color: var(--ng); font-weight: 600; }
+  .result { margin-top: 12px; font-size: 0.85rem; }
+
+  /* --- テーブル --- */
+  .table-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 12px; }
+  .table-toolbar input { max-width: 260px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; cursor: pointer; user-select: none; }
+  tr.low-stock td { background: var(--warn-bg); }
+  tr.low-stock td.stock-cell { color: var(--warn); font-weight: 700; }
+  td.actions { display: flex; gap: 6px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* --- スキャンページ --- */
+  .scan-layout { display: grid; grid-template-columns: 380px 1fr; gap: 20px; align-items: start; }
+  #scan-barcode { font-size: 1.3rem; padding: 12px; }
+  .product-panel { min-height: 60px; }
+  .product-panel .name { font-size: 1.1rem; font-weight: 700; }
+  .product-panel .stock { font-size: 2rem; font-weight: 800; margin: 6px 0; }
+  .product-panel .sub { color: var(--text-muted); font-size: 0.85rem; }
+  .diff-controls { display: flex; align-items: center; gap: 8px; margin: 14px 0; }
+  .diff-controls button { width: 40px; height: 40px; font-size: 1.2rem; border-radius: 6px; border: 1px solid var(--border); background: #fff; cursor: pointer; }
+  .diff-controls input { width: 80px; text-align: center; font-size: 1.1rem; }
+
+  /* --- ログイン画面 --- */
+  #login-screen {
+    position: fixed; inset: 0; background: var(--sidebar-bg);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  #login-screen.hidden { display: none; }
+  .login-box { background: var(--card); border-radius: 12px; padding: 32px 36px; width: 320px; }
+  .login-box h1 { font-size: 1.15rem; margin: 0 0 4px; }
+  .login-box p { color: var(--text-muted); font-size: 0.82rem; margin: 0 0 20px; }
+  .login-box label { margin-top: 12px; }
+  #app-root.hidden { display: none; }
+
+  /* --- ユーザーメニュー --- */
+  .user-menu { display: flex; align-items: center; gap: 12px; font-size: 0.85rem; color: var(--text-muted); }
+  .user-menu .role-badge {
+    font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; background: #eef1f6; color: var(--text);
+  }
+</style>
+</head>
+<body>
+
+<div id="login-screen">
+  <div class="login-box">
+    <h1>バーコード在庫管理</h1>
+    <p>ログインしてください</p>
+    <form id="login-form">
+      <label>ユーザー名<input id="login-username" required autofocus></label>
+      <label>パスワード<input id="login-password" type="password" required></label>
+      <div id="login-msg" class="msg ng"></div>
+      <button type="submit" class="btn" style="width:100%; margin-top:8px;">ログイン</button>
+    </form>
+  </div>
+</div>
+
+<div id="app-root" class="hidden" style="display:flex; width:100%;">
+
+<aside class="sidebar">
+  <div class="brand">バーコード在庫管理<small>Barcode Inventory</small></div>
+  <div class="nav-item active" data-page="dashboard"><span class="nav-icon">&#9632;</span>ダッシュボード</div>
+  <div class="nav-item" data-page="scan"><span class="nav-icon">&#9632;</span>スキャン</div>
+  <div class="nav-item" data-page="inventory"><span class="nav-icon">&#9632;</span>在庫一覧</div>
+  <div class="nav-item" data-page="register"><span class="nav-icon">&#9632;</span>商品登録</div>
+  <div class="nav-item" data-page="history"><span class="nav-icon">&#9632;</span>入出庫履歴</div>
+  <div class="nav-item admin-only" data-page="users" style="display:none"><span class="nav-icon">&#9632;</span>ユーザー管理</div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <h1 id="page-title">ダッシュボード</h1>
+    <div class="user-menu">
+      <span id="current-user"></span>
+      <span class="role-badge" id="current-role"></span>
+      <button class="btn secondary small" id="logout-btn">ログアウト</button>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- ダッシュボード -->
+    <section id="page-dashboard" class="page active">
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="label">登録商品数</div>
+          <div class="value" id="stat-items">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">総在庫数</div>
+          <div class="value" id="stat-stock">-</div>
+        </div>
+        <div class="stat-card danger">
+          <div class="label">在庫少の商品</div>
+          <div class="value" id="stat-low">-</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>在庫少の商品</h2>
+        <table>
+          <thead><tr><th>バーコード</th><th>商品名</th><th>在庫</th><th>場所</th></tr></thead>
+          <tbody id="dashboard-low-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- スキャン -->
+    <section id="page-scan" class="page">
+      <div class="scan-layout">
+        <div class="card">
+          <h2>バーコードをスキャン</h2>
+          <label>バーコード</label>
+          <input id="scan-barcode" placeholder="スキャンまたは入力してEnter" autofocus>
+          <div id="scan-validate-msg" class="msg"></div>
+
+          <div class="diff-controls">
+            <button type="button" id="diff-minus">-</button>
+            <input id="scan-diff" type="number" value="1">
+            <button type="button" id="diff-plus">+</button>
+          </div>
+          <button class="btn" id="scan-submit" style="width:100%">反映する</button>
+          <div id="scan-result" class="result"></div>
+        </div>
+
+        <div class="card product-panel" id="scan-product-panel">
+          <div class="sub">バーコードを入力すると商品情報が表示されます</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 在庫一覧 -->
+    <section id="page-inventory" class="page">
+      <div class="card">
+        <div class="table-toolbar">
+          <h2 style="margin:0">在庫一覧</h2>
+          <div style="display:flex; gap:8px;">
+            <input id="inventory-search" placeholder="バーコード・商品名で検索">
+            <button class="btn secondary" id="inventory-refresh">更新</button>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="barcode">バーコード</th>
+              <th data-sort="name">商品名</th>
+              <th data-sort="stock">在庫</th>
+              <th data-sort="location">場所</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="inventory-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 商品登録 -->
+    <section id="page-register" class="page">
+      <div class="card">
+        <h2>商品登録</h2>
+        <form id="register-form" class="form-grid">
+          <div class="full">
+            <label>バーコード</label>
+            <input id="reg-barcode" required>
+            <div id="reg-validate-msg" class="msg"></div>
+          </div>
+          <div class="full">
+            <label>商品名</label>
+            <input id="reg-name" required>
+          </div>
+          <div>
+            <label>初期在庫</label>
+            <input id="reg-stock" type="number" value="0">
+          </div>
+          <div>
+            <label>棚番/保管場所</label>
+            <input id="reg-location">
+          </div>
+          <div>
+            <label>在庫少の閾値</label>
+            <input id="reg-threshold" type="number" value="5">
+          </div>
+          <div class="full">
+            <button type="submit" class="btn">登録する</button>
+          </div>
+        </form>
+        <div id="reg-result" class="result"></div>
+      </div>
+    </section>
+
+    <!-- 履歴 -->
+    <section id="page-history" class="page">
+      <div class="card">
+        <div class="table-toolbar">
+          <h2 style="margin:0">入出庫履歴(最新200件)</h2>
+          <button class="btn secondary" id="history-refresh">更新</button>
+        </div>
+        <table>
+          <thead><tr><th>日時</th><th>バーコード</th><th>商品名</th><th>変化数</th><th>担当者</th></tr></thead>
+          <tbody id="history-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ユーザー管理(管理者のみ) -->
+    <section id="page-users" class="page">
+      <div class="card" style="margin-bottom:20px;">
+        <h2>ユーザー追加</h2>
+        <form id="user-form" class="form-grid">
+          <div>
+            <label>ユーザー名</label>
+            <input id="user-username" required>
+          </div>
+          <div>
+            <label>パスワード</label>
+            <input id="user-password" type="password" required>
+          </div>
+          <div>
+            <label>権限</label>
+            <select id="user-role" style="width:100%; padding:9px 10px; border:1px solid var(--border); border-radius:6px;">
+              <option value="user">一般ユーザー(在庫管理)</option>
+              <option value="admin">管理者</option>
+            </select>
+          </div>
+          <div class="full">
+            <button type="submit" class="btn">作成する</button>
+          </div>
+        </form>
+        <div id="user-result" class="result"></div>
+      </div>
+      <div class="card">
+        <div class="table-toolbar">
+          <h2 style="margin:0">ユーザー一覧</h2>
+          <button class="btn secondary" id="users-refresh">更新</button>
+        </div>
+        <table>
+          <thead><tr><th>ユーザー名</th><th>権限</th><th>作成日</th><th>操作</th></tr></thead>
+          <tbody id="users-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+</div>
+</div>
+
+<script>
+const API = "";
+
+// 全fetchにセッションCookieを含める
+const _fetch = window.fetch;
+window.fetch = (url, opts = {}) => _fetch(url, { ...opts, credentials: "include" });
+
+const PAGE_TITLES = {
+  dashboard: "ダッシュボード",
+  scan: "スキャン",
+  inventory: "在庫一覧",
+  register: "商品登録",
+  history: "入出庫履歴",
+  users: "ユーザー管理",
+};
+
+let currentUser = null;
+
+document.querySelectorAll(".nav-item").forEach(item => {
+  item.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach(i => i.classList.remove("active"));
+    document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+    item.classList.add("active");
+    const page = item.dataset.page;
+    document.getElementById("page-" + page).classList.add("active");
+    document.getElementById("page-title").textContent = PAGE_TITLES[page];
+    if (page === "dashboard") loadDashboard();
+    if (page === "inventory") loadInventory();
+    if (page === "history") loadHistory();
+    if (page === "users") loadUsers();
+    if (page === "scan") document.getElementById("scan-barcode").focus();
+  });
+});
+
+// ================= 認証 =================
+async function checkSession() {
+  const res = await fetch(`${API}/auth/me`);
+  if (!res.ok) {
+    showLogin();
+    return;
+  }
+  currentUser = await res.json();
+  showApp();
+}
+
+function showLogin() {
+  document.getElementById("login-screen").classList.remove("hidden");
+  document.getElementById("app-root").classList.add("hidden");
+}
+
+function showApp() {
+  document.getElementById("login-screen").classList.add("hidden");
+  document.getElementById("app-root").classList.remove("hidden");
+  document.getElementById("current-user").textContent = currentUser.username;
+  document.getElementById("current-role").textContent =
+    currentUser.role === "admin" ? "管理者" : "一般ユーザー";
+  document.querySelectorAll(".admin-only").forEach(el => {
+    el.style.display = currentUser.role === "admin" ? "" : "none";
+  });
+  document.getElementById("topbar-date").textContent =
+    new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "long", day: "numeric", weekday: "short" });
+  loadDashboard();
+}
+
+document.getElementById("login-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const username = document.getElementById("login-username").value.trim();
+  const password = document.getElementById("login-password").value;
+  const msg = document.getElementById("login-msg");
+  const res = await fetch(`${API}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    msg.textContent = data.message;
+    return;
+  }
+  currentUser = await res.json();
+  document.getElementById("login-password").value = "";
+  msg.textContent = "";
+  showApp();
+});
+
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  await fetch(`${API}/auth/logout`, { method: "POST" });
+  currentUser = null;
+  showLogin();
+});
+
+checkSession();
+
+async function validateBarcode(barcode) {
+  const res = await fetch(`${API}/barcode/${encodeURIComponent(barcode)}/validate`);
+  return res.json();
+}
+
+function renderValidateMsg(el, result) {
+  if (!result.isJAN) {
+    el.textContent = "";
+    el.className = "msg";
+    return;
+  }
+  if (result.valid) {
+    el.textContent = "✓ JANコードとして正しいチェックディジットです";
+    el.className = "msg ok";
+  } else {
+    el.textContent = "✗ チェックディジットが一致しません(読み取りミス・破損の可能性)";
+    el.className = "msg ng";
+  }
+}
+
+// ================= ダッシュボード =================
+async function loadDashboard() {
+  const res = await fetch(`${API}/inventory`);
+  const rows = await res.json();
+  const totalItems = rows.length;
+  const totalStock = rows.reduce((s, r) => s + r.stock, 0);
+  const lowRows = rows.filter(r => r.stock <= (r.low_stock_threshold ?? 5));
+
+  document.getElementById("stat-items").textContent = totalItems;
+  document.getElementById("stat-stock").textContent = totalStock;
+  document.getElementById("stat-low").textContent = lowRows.length;
+
+  const tbody = document.getElementById("dashboard-low-body");
+  tbody.innerHTML = "";
+  if (lowRows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--text-muted)">在庫少の商品はありません</td></tr>`;
+  }
+  lowRows.forEach(p => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${p.barcode}</td><td>${escapeHtml(p.name)}</td><td>${p.stock}</td><td>${escapeHtml(p.location || "-")}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+// ================= スキャン =================
+const scanBarcodeInput = document.getElementById("scan-barcode");
+const scanValidateMsg = document.getElementById("scan-validate-msg");
+const scanProductPanel = document.getElementById("scan-product-panel");
+const scanResult = document.getElementById("scan-result");
+const scanDiffInput = document.getElementById("scan-diff");
+
+document.getElementById("diff-plus").addEventListener("click", () => {
+  scanDiffInput.value = Number(scanDiffInput.value || 0) + 1;
+});
+document.getElementById("diff-minus").addEventListener("click", () => {
+  scanDiffInput.value = Number(scanDiffInput.value || 0) - 1;
+});
+
+async function checkScanBarcode() {
+  const barcode = scanBarcodeInput.value.trim();
+  if (!barcode) {
+    scanValidateMsg.textContent = "";
+    scanValidateMsg.className = "msg";
+    scanProductPanel.innerHTML = `<div class="sub">バーコードを入力すると商品情報が表示されます</div>`;
+    return;
+  }
+  const result = await validateBarcode(barcode);
+  renderValidateMsg(scanValidateMsg, result);
+
+  const res = await fetch(`${API}/products/${encodeURIComponent(barcode)}`);
+  if (res.ok) {
+    const p = await res.json();
+    scanProductPanel.innerHTML = `
+      <div class="name">${escapeHtml(p.name)}</div>
+      <div class="stock">${p.stock}<span style="font-size:0.9rem;color:var(--text-muted)"> 個</span></div>
+      <div class="sub">場所: ${escapeHtml(p.location || "-")} / バーコード: ${p.barcode}</div>
+    `;
+  } else {
+    scanProductPanel.innerHTML = `<div class="sub" style="color:var(--ng)">この商品は未登録です</div>`;
+  }
+}
+
+scanBarcodeInput.addEventListener("keydown", e => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    checkScanBarcode();
+  }
+});
+scanBarcodeInput.addEventListener("blur", checkScanBarcode);
+
+document.getElementById("scan-submit").addEventListener("click", async () => {
+  const barcode = scanBarcodeInput.value.trim();
+  const diff = Number(scanDiffInput.value);
+  scanResult.textContent = "";
+  if (!barcode) return;
+
+  const res = await fetch(`${API}/scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ barcode, diff }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    scanResult.innerHTML = `<span style="color:var(--ng)">エラー: ${escapeHtml(data.message)}</span>`;
+  } else {
+    scanResult.innerHTML = `<span style="color:var(--ok)">更新しました。${escapeHtml(data.name)} の在庫: ${data.stock}</span>`;
+    scanBarcodeInput.value = "";
+    scanDiffInput.value = 1;
+    scanValidateMsg.textContent = "";
+    scanProductPanel.innerHTML = `<div class="sub">バーコードを入力すると商品情報が表示されます</div>`;
+    scanBarcodeInput.focus();
+  }
+});
+
+// ================= 商品登録 =================
+const regBarcodeInput = document.getElementById("reg-barcode");
+const regValidateMsg = document.getElementById("reg-validate-msg");
+
+regBarcodeInput.addEventListener("blur", async () => {
+  const barcode = regBarcodeInput.value.trim();
+  if (!barcode) {
+    regValidateMsg.textContent = "";
+    regValidateMsg.className = "msg";
+    return;
+  }
+  renderValidateMsg(regValidateMsg, await validateBarcode(barcode));
+});
+
+document.getElementById("register-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const barcode = regBarcodeInput.value.trim();
+  const name = document.getElementById("reg-name").value.trim();
+  const stock = Number(document.getElementById("reg-stock").value);
+  const location = document.getElementById("reg-location").value.trim();
+  const low_stock_threshold = Number(document.getElementById("reg-threshold").value);
+  const regResult = document.getElementById("reg-result");
+
+  const res = await fetch(`${API}/products`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ barcode, name, stock, location, low_stock_threshold }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    regResult.innerHTML = `<span style="color:var(--ng)">エラー: ${escapeHtml(data.message)}</span>`;
+  } else {
+    regResult.innerHTML = `<span style="color:var(--ok)">登録しました: ${escapeHtml(name)}</span>`;
+    e.target.reset();
+    document.getElementById("reg-threshold").value = 5;
+    regValidateMsg.textContent = "";
+  }
+});
+
+// ================= 在庫一覧 =================
+let inventoryRows = [];
+let sortKey = "barcode";
+let sortAsc = true;
+
+async function loadInventory() {
+  const res = await fetch(`${API}/inventory`);
+  inventoryRows = await res.json();
+  renderInventory();
+}
+
+function renderInventory() {
+  const search = document.getElementById("inventory-search").value.trim().toLowerCase();
+  let rows = inventoryRows.filter(p =>
+    !search || p.barcode.includes(search) || (p.name || "").toLowerCase().includes(search)
+  );
+  rows = rows.slice().sort((a, b) => {
+    const av = a[sortKey], bv = b[sortKey];
+    const cmp = typeof av === "number" ? av - bv : String(av).localeCompare(String(bv), "ja");
+    return sortAsc ? cmp : -cmp;
+  });
+
+  const tbody = document.getElementById("inventory-body");
+  tbody.innerHTML = "";
+  rows.forEach(p => {
+    const isLow = p.stock <= (p.low_stock_threshold ?? 5);
+    const tr = document.createElement("tr");
+    if (isLow) tr.className = "low-stock";
+    tr.innerHTML = `
+      <td>${p.barcode}</td>
+      <td>${escapeHtml(p.name)}</td>
+      <td class="num stock-cell">${p.stock}</td>
+      <td>${escapeHtml(p.location || "-")}</td>
+      <td class="actions">
+        <button class="btn small secondary" data-action="edit" data-barcode="${p.barcode}">編集</button>
+        <button class="btn small danger" data-action="delete" data-barcode="${p.barcode}">削除</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById("inventory-search").addEventListener("input", renderInventory);
+document.getElementById("inventory-refresh").addEventListener("click", loadInventory);
+
+document.querySelectorAll("th[data-sort]").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (sortKey === key) sortAsc = !sortAsc; else { sortKey = key; sortAsc = true; }
+    renderInventory();
+  });
+});
+
+document.getElementById("inventory-body").addEventListener("click", async e => {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn) return;
+  const barcode = btn.dataset.barcode;
+  const product = inventoryRows.find(p => p.barcode === barcode);
+
+  if (btn.dataset.action === "delete") {
+    if (!confirm(`「${product.name}」を削除しますか？`)) return;
+    await fetch(`${API}/products/${encodeURIComponent(barcode)}`, { method: "DELETE" });
+    loadInventory();
+  }
+
+  if (btn.dataset.action === "edit") {
+    const name = prompt("商品名", product.name);
+    if (name === null) return;
+    const location = prompt("保管場所", product.location || "");
+    if (location === null) return;
+    const threshold = prompt("在庫少の閾値", product.low_stock_threshold ?? 5);
+    if (threshold === null) return;
+    await fetch(`${API}/products/${encodeURIComponent(barcode)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, location, low_stock_threshold: Number(threshold) }),
+    });
+    loadInventory();
+  }
+});
+
+// ================= 履歴 =================
+async function loadHistory() {
+  const res = await fetch(`${API}/logs`);
+  const rows = await res.json();
+  const tbody = document.getElementById("history-body");
+  tbody.innerHTML = "";
+  rows.forEach(l => {
+    const tr = document.createElement("tr");
+    const diffText = l.diff > 0 ? `+${l.diff}` : `${l.diff}`;
+    tr.innerHTML = `
+      <td>${new Date(l.time).toLocaleString("ja-JP")}</td>
+      <td>${l.barcode}</td>
+      <td>${escapeHtml(l.name || "-")}</td>
+      <td class="num" style="color:${l.diff >= 0 ? "var(--ok)" : "var(--ng)"}">${diffText}</td>
+      <td>${escapeHtml(l.username || "-")}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+document.getElementById("history-refresh").addEventListener("click", loadHistory);
+
+// ================= ユーザー管理(管理者) =================
+async function loadUsers() {
+  const res = await fetch(`${API}/admin/users`);
+  if (!res.ok) return;
+  const rows = await res.json();
+  const tbody = document.getElementById("users-body");
+  tbody.innerHTML = "";
+  rows.forEach(u => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(u.username)}</td>
+      <td>${u.role === "admin" ? "管理者" : "一般ユーザー"}</td>
+      <td>${new Date(u.created_at).toLocaleDateString("ja-JP")}</td>
+      <td class="actions">
+        <button class="btn small secondary" data-action="reset" data-id="${u.id}" data-name="${escapeHtml(u.username)}">PW再設定</button>
+        <button class="btn small danger" data-action="delete-user" data-id="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+document.getElementById("users-refresh").addEventListener("click", loadUsers);
+
+document.getElementById("user-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const username = document.getElementById("user-username").value.trim();
+  const password = document.getElementById("user-password").value;
+  const role = document.getElementById("user-role").value;
+  const result = document.getElementById("user-result");
+
+  const res = await fetch(`${API}/admin/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, role }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    result.innerHTML = `<span style="color:var(--ng)">エラー: ${escapeHtml(data.message)}</span>`;
+  } else {
+    result.innerHTML = `<span style="color:var(--ok)">作成しました: ${escapeHtml(username)}</span>`;
+    e.target.reset();
+    loadUsers();
+  }
+});
+
+document.getElementById("users-body").addEventListener("click", async e => {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const name = btn.dataset.name;
+
+  if (btn.dataset.action === "delete-user") {
+    if (!confirm(`ユーザー「${name}」を削除しますか？`)) return;
+    await fetch(`${API}/admin/users/${id}`, { method: "DELETE" });
+    loadUsers();
+  }
+
+  if (btn.dataset.action === "reset") {
+    const password = prompt(`「${name}」の新しいパスワード`);
+    if (!password) return;
+    await fetch(`${API}/admin/users/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    alert("パスワードを更新しました");
+  }
+});
+</script>
+</body>
+</html>
