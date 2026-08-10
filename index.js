@@ -151,6 +151,17 @@ async function createApp(dbConfig, sessionSecret) {
     res.json({ status: "barcode API server running" });
   });
 
+  // クライアントの更新チェック用（デプロイのたびに version.json を更新する）
+  app.get("/api/latest-version", async (req, res) => {
+    try {
+      const fs = require("fs");
+      const data = JSON.parse(fs.readFileSync(path.join(__dirname, "version.json"), "utf8"));
+      res.json(data);
+    } catch (e) {
+      res.json({ sha: null, message: "", date: null });
+    }
+  });
+
   app.use(express.static(path.join(__dirname, "public")));
 
   // バーコードのチェックディジット検証（読み取り前の確認用）

@@ -3,7 +3,6 @@ db.sqlite
 *.cpuprofile
 origin/
 dist/
-release/
-release2/
+release*/
 *.txt
 .claude/

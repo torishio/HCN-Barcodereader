@@ -165,6 +165,23 @@
   .login-box label { margin-top: 12px; }
   #app-root.hidden { display: none; }
 
+  /* --- アップデート通知(小さく表示) --- */
+  #update-banner {
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(255,255,255,0.08); color: #cbd5e1;
+    font-size: 0.72rem; padding: 6px 12px; border-radius: 8px;
+    margin-bottom: 10px; max-width: 320px;
+  }
+  #update-banner.hidden { display: none; }
+  #update-banner .upd-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #update-banner button {
+    font-size: 0.7rem; padding: 3px 8px; border: none; border-radius: 5px;
+    background: var(--accent); color: #fff; cursor: pointer;
+  }
+  #update-banner .upd-dismiss {
+    background: transparent; color: #94a3b8; padding: 2px 4px;
+  }
+
   /* --- ユーザーメニュー --- */
   .user-menu { display: flex; align-items: center; gap: 12px; font-size: 0.85rem; color: var(--text-muted); }
   .user-menu .role-badge {
@@ -175,15 +192,18 @@
 <body>
 
 <div id="login-screen">
-  <div class="login-box">
-    <h1>バーコード在庫管理</h1>
-    <p>ログインしてください</p>
-    <form id="login-form">
-      <label>ユーザー名<input id="login-username" required autofocus></label>
-      <label>パスワード<input id="login-password" type="password" required></label>
-      <div id="login-msg" class="msg ng"></div>
-      <button type="submit" class="btn" style="width:100%; margin-top:8px;">ログイン</button>
-    </form>
+  <div>
+    <div id="update-banner" class="hidden"></div>
+    <div class="login-box">
+      <h1>バーコード在庫管理</h1>
+      <p>ログインしてください</p>
+      <form id="login-form">
+        <label>ユーザー名<input id="login-username" required autofocus></label>
+        <label>パスワード<input id="login-password" type="password" required></label>
+        <div id="login-msg" class="msg ng"></div>
+        <button type="submit" class="btn" style="width:100%; margin-top:8px;">ログイン</button>
+      </form>
+    </div>
   </div>
 </div>
 
@@ -467,6 +487,30 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
 });
 
 checkSession();
+
+// ================= アップデート通知 =================
+async function checkForUpdate() {
+  if (!window.electronAPI) return; // Electron以外(通常ブラウザ)では何もしない
+  const info = await window.electronAPI.checkForUpdate();
+  if (!info || !info.hasUpdate) return;
+  if (localStorage.getItem("dismissedUpdateSha") === info.sha) return;
+
+  const banner = document.getElementById("update-banner");
+  banner.classList.remove("hidden");
+  banner.innerHTML = `
+    <span class="upd-text" title="${escapeHtml(info.message)}">更新あり: ${escapeHtml(info.message)}</span>
+    <button id="upd-open">更新する</button>
+    <button class="upd-dismiss" id="upd-dismiss">×</button>
+  `;
+  document.getElementById("upd-open").addEventListener("click", () => {
+    window.electronAPI.openUpdatePage();
+  });
+  document.getElementById("upd-dismiss").addEventListener("click", () => {
+    localStorage.setItem("dismissedUpdateSha", info.sha);
+    banner.classList.add("hidden");
+  });
+}
+checkForUpdate();
 
 async function validateBarcode(barcode) {
   const res = await fetch(`${API}/barcode/${encodeURIComponent(barcode)}/validate`);
