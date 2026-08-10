@@ -224,6 +224,7 @@
   <div class="nav-item" data-page="users" data-roles="admin"><span class="nav-icon">&#9632;</span>ユーザー管理</div>
   <div class="nav-item" data-page="groups" data-roles="admin"><span class="nav-icon">&#9632;</span>グループ管理</div>
   <div class="nav-item" data-page="companies" data-roles="superadmin"><span class="nav-icon">&#9632;</span>会社管理</div>
+  <div class="nav-item" data-page="account" data-roles="superadmin,admin,user"><span class="nav-icon">&#9632;</span>アカウント設定</div>
 </aside>
 
 <div class="main">
@@ -463,7 +464,7 @@
         </form>
         <div id="company-result" class="result"></div>
       </div>
-      <div class="card" style="max-width:560px;">
+      <div class="card" style="max-width:560px; margin-bottom:20px;">
         <div class="table-toolbar">
           <h2 style="margin:0">会社一覧</h2>
           <button class="btn secondary" id="companies-refresh">更新</button>
@@ -472,6 +473,29 @@
           <thead><tr><th>企業ID</th><th>会社名</th><th>作成日</th><th>操作</th></tr></thead>
           <tbody id="companies-body"></tbody>
         </table>
+      </div>
+      <div class="card" style="max-width:720px;">
+        <div class="table-toolbar">
+          <h2 style="margin:0">全ユーザー一覧</h2>
+          <button class="btn secondary" id="all-users-refresh">更新</button>
+        </div>
+        <table>
+          <thead><tr><th>会社</th><th>ユーザー名</th><th>権限</th><th>操作</th></tr></thead>
+          <tbody id="all-users-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- アカウント設定(全ロール共通) -->
+    <section id="page-account" class="page">
+      <div class="card" style="max-width:420px;">
+        <h2>パスワード変更</h2>
+        <form id="password-form">
+          <label>現在のパスワード<input id="pw-current" type="password" required></label>
+          <label>新しいパスワード<input id="pw-new" type="password" required></label>
+          <button type="submit" class="btn" style="width:100%; margin-top:10px;">変更する</button>
+        </form>
+        <div id="password-result" class="result"></div>
       </div>
     </section>
 
@@ -501,6 +525,7 @@ const PAGE_TITLES = {
   users: "ユーザー管理",
   groups: "グループ管理",
   companies: "会社管理",
+  account: "アカウント設定",
 };
 const ROLE_LABELS = { superadmin: "システム管理者", admin: "企業管理者", user: "一般ユーザー" };
 
@@ -586,7 +611,7 @@ function selectPage(page) {
   if (page === "history") loadHistory();
   if (page === "users") { loadUsers(); loadGroupOptions(); }
   if (page === "groups") loadGroups();
-  if (page === "companies") loadCompanies();
+  if (page === "companies") { loadCompanies(); loadAllUsers(); }
   if (page === "scan") document.getElementById("scan-barcode").focus();
 }
 
@@ -1059,7 +1084,10 @@ async function loadCompanies() {
       <td>${escapeHtml(c.code)}</td>
       <td>${escapeHtml(c.name)}</td>
       <td>${new Date(c.created_at).toLocaleDateString("ja-JP")}</td>
-      <td class="actions"><button class="btn small danger" data-id="${c.id}" data-name="${escapeHtml(c.name)}">削除</button></td>
+      <td class="actions">
+        <button class="btn small secondary" data-action="rename" data-id="${c.id}" data-name="${escapeHtml(c.name)}">名前変更</button>
+        <button class="btn small danger" data-action="delete" data-id="${c.id}" data-name="${escapeHtml(c.name)}">削除</button>
+      </td>
     `;
     tbody.appendChild(tr);
   });
@@ -1090,11 +1118,94 @@ document.getElementById("company-form").addEventListener("submit", async e => {
 });
 
 document.getElementById("companies-body").addEventListener("click", async e => {
-  const btn = e.target.closest("button[data-id]");
+  const btn = e.target.closest("button[data-action]");
   if (!btn) return;
-  if (!confirm(`会社「${btn.dataset.name}」を削除しますか？(所属ユーザー・在庫データも全て削除されます)`)) return;
-  await fetch(`${API}/superadmin/companies/${btn.dataset.id}`, { method: "DELETE" });
-  loadCompanies();
+  const id = btn.dataset.id;
+
+  if (btn.dataset.action === "delete") {
+    if (!confirm(`会社「${btn.dataset.name}」を削除しますか？(所属ユーザー・在庫データも全て削除されます)`)) return;
+    await fetch(`${API}/superadmin/companies/${id}`, { method: "DELETE" });
+    loadCompanies();
+  }
+
+  if (btn.dataset.action === "rename") {
+    const name = prompt("新しい会社名", btn.dataset.name);
+    if (!name) return;
+    await fetch(`${API}/superadmin/companies/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    loadCompanies();
+  }
+});
+
+// ================= 全ユーザー一覧(システム管理者) =================
+async function loadAllUsers() {
+  const res = await fetch(`${API}/superadmin/users`);
+  if (!res.ok) return;
+  const rows = await res.json();
+  const tbody = document.getElementById("all-users-body");
+  tbody.innerHTML = "";
+  rows.forEach(u => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(u.company_name || "(システム管理者)")}</td>
+      <td>${escapeHtml(u.username)}</td>
+      <td>${ROLE_LABELS[u.role] || u.role}</td>
+      <td class="actions">
+        <button class="btn small secondary" data-action="reset" data-id="${u.id}" data-name="${escapeHtml(u.username)}">PW再設定</button>
+        <button class="btn small danger" data-action="delete" data-id="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+document.getElementById("all-users-refresh").addEventListener("click", loadAllUsers);
+
+document.getElementById("all-users-body").addEventListener("click", async e => {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const name = btn.dataset.name;
+
+  if (btn.dataset.action === "delete") {
+    if (!confirm(`ユーザー「${name}」を削除しますか？`)) return;
+    await fetch(`${API}/superadmin/users/${id}`, { method: "DELETE" });
+    loadAllUsers();
+  }
+
+  if (btn.dataset.action === "reset") {
+    const password = prompt(`「${name}」の新しいパスワード`);
+    if (!password) return;
+    await fetch(`${API}/superadmin/users/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    alert("パスワードを更新しました");
+  }
+});
+
+// ================= アカウント設定(全ロール) =================
+document.getElementById("password-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const currentPassword = document.getElementById("pw-current").value;
+  const newPassword = document.getElementById("pw-new").value;
+  const result = document.getElementById("password-result");
+
+  const res = await fetch(`${API}/auth/password`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    result.innerHTML = `<span style="color:var(--ng)">エラー: ${escapeHtml(data.message)}</span>`;
+  } else {
+    result.innerHTML = `<span style="color:var(--ok)">パスワードを変更しました</span>`;
+    e.target.reset();
+  }
 });
 </script>
 </body>

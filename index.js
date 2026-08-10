@@ -221,10 +221,67 @@ async function createApp(dbConfig, sessionSecret) {
     res.json(req.session.user);
   });
 
+  // 自分自身のパスワード変更（全ロール共通）
+  app.put("/auth/password", requireAuth, async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "currentPassword, newPassword は必須です" });
+    }
+    const [rows] = await pool.query("SELECT * FROM users WHERE id = ?", [req.session.user.id]);
+    const user = rows[0];
+    if (!user || !(await bcrypt.compare(currentPassword, user.password_hash))) {
+      return res.status(401).json({ message: "現在のパスワードが違います" });
+    }
+    const hash = await bcrypt.hash(newPassword, 10);
+    await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [hash, user.id]);
+    res.json({ message: "Password updated" });
+  });
+
   // --- システム管理者: 会社管理 ---
   app.get("/superadmin/companies", requireSuperadmin, async (req, res) => {
     const [rows] = await pool.query("SELECT * FROM companies ORDER BY id");
     res.json(rows);
+  });
+
+  app.put("/superadmin/companies/:id", requireSuperadmin, async (req, res) => {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ message: "name は必須です" });
+    await pool.query("UPDATE companies SET name = ? WHERE id = ?", [name, req.params.id]);
+    res.json({ message: "Updated" });
+  });
+
+  // --- システム管理者: 全社ユーザー管理 ---
+  app.get("/superadmin/users", requireSuperadmin, async (req, res) => {
+    const [rows] = await pool.query(
+      `SELECT users.id, users.username, users.role, users.created_at,
+              companies.name AS company_name, companies.code AS company_code
+       FROM users LEFT JOIN companies ON users.company_id = companies.id
+       ORDER BY companies.name IS NULL DESC, companies.name, users.id`
+    );
+    res.json(rows);
+  });
+
+  app.put("/superadmin/users/:id", requireSuperadmin, async (req, res) => {
+    const { role, password } = req.body;
+    if (role) {
+      await pool.query("UPDATE users SET role = ? WHERE id = ?", [
+        role === "superadmin" ? "superadmin" : role === "admin" ? "admin" : "user",
+        req.params.id,
+      ]);
+    }
+    if (password) {
+      const hash = await bcrypt.hash(password, 10);
+      await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [hash, req.params.id]);
+    }
+    res.json({ message: "Updated" });
+  });
+
+  app.delete("/superadmin/users/:id", requireSuperadmin, async (req, res) => {
+    if (Number(req.params.id) === req.session.user.id) {
+      return res.status(400).json({ message: "自分自身は削除できません" });
+    }
+    await pool.query("DELETE FROM users WHERE id = ?", [req.params.id]);
+    res.json({ message: "Deleted" });
   });
 
   app.post("/superadmin/companies", requireSuperadmin, async (req, res) => {
