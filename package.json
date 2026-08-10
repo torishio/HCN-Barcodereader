@@ -28,7 +28,7 @@
     "appId": "com.torishio.barcode-inventory",
     "productName": "バーコード在庫管理",
     "directories": {
-      "output": "release4"
+      "output": "release5"
     },
     "files": [
       "main.js",

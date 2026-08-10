@@ -7,7 +7,7 @@ const SERVER_URL = process.env.INVENTORY_SERVER_URL || "https://160.251.172.180:
 const TRUSTED_HOST = "160.251.172.180";
 
 // このビルドの元になったコミット（リリース時に更新する）
-const BUILD_COMMIT = "fafa630da9e8708d20b211a454d2389c93149382";
+const BUILD_COMMIT = "6dd6e7747019b688e47345333bf6b4c8cdcca808";
 const REPO_URL = "https://github.com/torishio/HCN-Barcodereader";
 
 function createWindow() {
