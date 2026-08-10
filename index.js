@@ -39,6 +39,12 @@ async function migrate(pool) {
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  const [companyCols] = await pool.query("SHOW COLUMNS FROM companies");
+  if (!companyCols.some(c => c.Field === "default_low_stock_threshold")) {
+    await pool.query(
+      "ALTER TABLE companies ADD COLUMN default_low_stock_threshold INT NOT NULL DEFAULT 5"
+    );
+  }
 
   // グループ（会社内の分類ラベル）
   await pool.query(`
@@ -343,9 +349,52 @@ async function createApp(dbConfig, sessionSecret) {
     }
   });
 
+  app.put("/admin/groups/:id", requireCompanyAdmin, async (req, res) => {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ message: "name は必須です" });
+    try {
+      await pool.query("UPDATE \`groups\` SET name = ? WHERE id = ?", [name, req.params.id]);
+      res.json({ message: "Updated" });
+    } catch (err) {
+      if (err.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({ message: "同じ名前のグループが既にあります" });
+      }
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.delete("/admin/groups/:id", requireCompanyAdmin, async (req, res) => {
     await pool.query("DELETE FROM \`groups\` WHERE id = ?", [req.params.id]);
     res.json({ message: "Deleted" });
+  });
+
+  // --- 会社管理者: 会社設定 ---
+  app.get("/admin/company", requireCompanyAdmin, async (req, res) => {
+    const companyId = req.session.user.company_id;
+    if (!companyId) return res.status(400).json({ message: "システム管理者はこのAPIを使えません" });
+    const [companies] = await pool.query("SELECT * FROM companies WHERE id = ?", [companyId]);
+    const [[userCount]] = await pool.query("SELECT COUNT(*) AS n FROM users WHERE company_id = ?", [companyId]);
+    const [[productCount]] = await pool.query(
+      "SELECT COUNT(*) AS n, COALESCE(SUM(stock),0) AS totalStock FROM products WHERE company_id = ?",
+      [companyId]
+    );
+    res.json({
+      ...companies[0],
+      userCount: userCount.n,
+      productCount: productCount.n,
+      totalStock: productCount.totalStock,
+    });
+  });
+
+  app.put("/admin/company", requireCompanyAdmin, async (req, res) => {
+    const companyId = req.session.user.company_id;
+    if (!companyId) return res.status(400).json({ message: "システム管理者はこのAPIを使えません" });
+    const { default_low_stock_threshold } = req.body;
+    await pool.query("UPDATE companies SET default_low_stock_threshold = ? WHERE id = ?", [
+      Number(default_low_stock_threshold) || 5,
+      companyId,
+    ]);
+    res.json({ message: "Updated" });
   });
 
   // --- 会社管理者: ユーザー管理（自社のみ） ---
@@ -384,21 +433,31 @@ async function createApp(dbConfig, sessionSecret) {
   });
 
   app.put("/admin/users/:id", requireCompanyAdmin, async (req, res) => {
-    const { role, password, groupId } = req.body;
-    if (role) {
-      await pool.query("UPDATE users SET role = ? WHERE id = ?", [
-        role === "admin" ? "admin" : "user",
-        req.params.id,
-      ]);
+    const { role, password, groupId, username } = req.body;
+    try {
+      if (username) {
+        await pool.query("UPDATE users SET username = ? WHERE id = ?", [username, req.params.id]);
+      }
+      if (role) {
+        await pool.query("UPDATE users SET role = ? WHERE id = ?", [
+          role === "admin" ? "admin" : "user",
+          req.params.id,
+        ]);
+      }
+      if (groupId !== undefined) {
+        await pool.query("UPDATE users SET group_id = ? WHERE id = ?", [groupId || null, req.params.id]);
+      }
+      if (password) {
+        const hash = await bcrypt.hash(password, 10);
+        await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [hash, req.params.id]);
+      }
+      res.json({ message: "Updated" });
+    } catch (err) {
+      if (err.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({ message: "そのユーザー名は既に使われています" });
+      }
+      res.status(500).json({ message: err.message });
     }
-    if (groupId !== undefined) {
-      await pool.query("UPDATE users SET group_id = ? WHERE id = ?", [groupId || null, req.params.id]);
-    }
-    if (password) {
-      const hash = await bcrypt.hash(password, 10);
-      await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [hash, req.params.id]);
-    }
-    res.json({ message: "Updated" });
   });
 
   app.delete("/admin/users/:id", requireCompanyAdmin, async (req, res) => {
@@ -458,10 +517,19 @@ async function createApp(dbConfig, sessionSecret) {
       });
     }
 
+    let threshold = low_stock_threshold;
+    if (threshold === undefined || threshold === null) {
+      const [[company]] = await pool.query(
+        "SELECT default_low_stock_threshold FROM companies WHERE id = ?",
+        [companyId]
+      );
+      threshold = company ? company.default_low_stock_threshold : 5;
+    }
+
     await pool.query(
       `INSERT INTO products (company_id, barcode, name, stock, location, low_stock_threshold) VALUES (?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE name = VALUES(name), stock = VALUES(stock), location = VALUES(location), low_stock_threshold = VALUES(low_stock_threshold)`,
-      [companyId, barcode, name, stock ?? 0, location ?? "", low_stock_threshold ?? 5]
+      [companyId, barcode, name, stock ?? 0, location ?? "", threshold]
     );
     res.json({ message: "Product saved" });
   });

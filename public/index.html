@@ -223,6 +223,7 @@
   <div class="nav-item" data-page="history" data-roles="admin,user"><span class="nav-icon">&#9632;</span>入出庫履歴</div>
   <div class="nav-item" data-page="users" data-roles="admin"><span class="nav-icon">&#9632;</span>ユーザー管理</div>
   <div class="nav-item" data-page="groups" data-roles="admin"><span class="nav-icon">&#9632;</span>グループ管理</div>
+  <div class="nav-item" data-page="company-settings" data-roles="admin"><span class="nav-icon">&#9632;</span>会社設定</div>
   <div class="nav-item" data-page="companies" data-roles="superadmin"><span class="nav-icon">&#9632;</span>会社管理</div>
   <div class="nav-item" data-page="account" data-roles="superadmin,admin,user"><span class="nav-icon">&#9632;</span>アカウント設定</div>
 </aside>
@@ -437,6 +438,34 @@
       </div>
     </section>
 
+    <!-- 会社設定(企業管理者) -->
+    <section id="page-company-settings" class="page">
+      <div class="stat-grid" style="grid-template-columns: repeat(3, 200px);">
+        <div class="stat-card">
+          <div class="label">ユーザー数</div>
+          <div class="value" id="cs-user-count">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">登録商品数</div>
+          <div class="value" id="cs-product-count">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">総在庫数</div>
+          <div class="value" id="cs-total-stock">-</div>
+        </div>
+      </div>
+      <div class="card" style="max-width:480px;">
+        <h2>会社情報</h2>
+        <p style="font-size:0.88rem; margin:4px 0;">企業ID: <strong id="cs-code">-</strong></p>
+        <p style="font-size:0.88rem; margin:4px 0 16px;">会社名: <strong id="cs-name">-</strong>（変更はシステム管理者へ）</p>
+        <form id="company-settings-form">
+          <label>在庫少と判定するデフォルトの閾値（新規登録時の初期値）<input id="cs-threshold" type="number" required></label>
+          <button type="submit" class="btn" style="width:100%; margin-top:10px;">保存する</button>
+        </form>
+        <div id="company-settings-result" class="result"></div>
+      </div>
+    </section>
+
     <!-- 会社管理(システム管理者) -->
     <section id="page-companies" class="page">
       <div class="card" style="margin-bottom:20px; max-width:560px;">
@@ -525,6 +554,7 @@ const PAGE_TITLES = {
   users: "ユーザー管理",
   groups: "グループ管理",
   companies: "会社管理",
+  "company-settings": "会社設定",
   account: "アカウント設定",
 };
 const ROLE_LABELS = { superadmin: "システム管理者", admin: "企業管理者", user: "一般ユーザー" };
@@ -611,6 +641,7 @@ function selectPage(page) {
   if (page === "history") loadHistory();
   if (page === "users") { loadUsers(); loadGroupOptions(); }
   if (page === "groups") loadGroups();
+  if (page === "company-settings") loadCompanySettings();
   if (page === "companies") { loadCompanies(); loadAllUsers(); }
   if (page === "scan") document.getElementById("scan-barcode").focus();
 }
@@ -970,6 +1001,7 @@ async function loadUsers() {
       <td>${escapeHtml(u.group_name || "-")}</td>
       <td>${new Date(u.created_at).toLocaleDateString("ja-JP")}</td>
       <td class="actions">
+        <button class="btn small secondary" data-action="rename" data-id="${u.id}" data-name="${escapeHtml(u.username)}">名前変更</button>
         <button class="btn small secondary" data-action="reset" data-id="${u.id}" data-name="${escapeHtml(u.username)}">PW再設定</button>
         <button class="btn small danger" data-action="delete-user" data-id="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>
       </td>
@@ -1014,6 +1046,21 @@ document.getElementById("users-body").addEventListener("click", async e => {
     loadUsers();
   }
 
+  if (btn.dataset.action === "rename") {
+    const username = prompt("新しいユーザー名", name);
+    if (!username || username === name) return;
+    const res = await fetch(`${API}/admin/users/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      alert(data.message);
+    }
+    loadUsers();
+  }
+
   if (btn.dataset.action === "reset") {
     const password = prompt(`「${name}」の新しいパスワード`);
     if (!password) return;
@@ -1037,7 +1084,10 @@ async function loadGroups() {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(g.name)}</td>
-      <td class="actions"><button class="btn small danger" data-id="${g.id}">削除</button></td>
+      <td class="actions">
+        <button class="btn small secondary" data-action="rename" data-id="${g.id}" data-name="${escapeHtml(g.name)}">編集</button>
+        <button class="btn small danger" data-action="delete" data-id="${g.id}">削除</button>
+      </td>
     `;
     tbody.appendChild(tr);
   });
@@ -1064,11 +1114,55 @@ document.getElementById("group-form").addEventListener("submit", async e => {
 });
 
 document.getElementById("groups-body").addEventListener("click", async e => {
-  const btn = e.target.closest("button[data-id]");
+  const btn = e.target.closest("button[data-action]");
   if (!btn) return;
-  if (!confirm("このグループを削除しますか？")) return;
-  await fetch(`${API}/admin/groups/${btn.dataset.id}`, { method: "DELETE" });
-  loadGroups();
+  const id = btn.dataset.id;
+
+  if (btn.dataset.action === "delete") {
+    if (!confirm("このグループを削除しますか？")) return;
+    await fetch(`${API}/admin/groups/${id}`, { method: "DELETE" });
+    loadGroups();
+  }
+
+  if (btn.dataset.action === "rename") {
+    const name = prompt("新しいグループ名", btn.dataset.name);
+    if (!name) return;
+    await fetch(`${API}/admin/groups/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    loadGroups();
+  }
+});
+
+// ================= 会社設定(企業管理者) =================
+async function loadCompanySettings() {
+  const res = await fetch(`${API}/admin/company`);
+  if (!res.ok) return;
+  const c = await res.json();
+  document.getElementById("cs-code").textContent = c.code;
+  document.getElementById("cs-name").textContent = c.name;
+  document.getElementById("cs-user-count").textContent = c.userCount;
+  document.getElementById("cs-product-count").textContent = c.productCount;
+  document.getElementById("cs-total-stock").textContent = c.totalStock;
+  document.getElementById("cs-threshold").value = c.default_low_stock_threshold;
+}
+
+document.getElementById("company-settings-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const threshold = document.getElementById("cs-threshold").value;
+  const result = document.getElementById("company-settings-result");
+  const res = await fetch(`${API}/admin/company`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ default_low_stock_threshold: threshold }),
+  });
+  if (!res.ok) {
+    result.innerHTML = `<span style="color:var(--ng)">保存に失敗しました</span>`;
+  } else {
+    result.innerHTML = `<span style="color:var(--ok)">保存しました</span>`;
+  }
 });
 
 // ================= 会社管理(システム管理者) =================
