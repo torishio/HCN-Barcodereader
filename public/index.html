@@ -190,6 +190,14 @@
   }
   .modal-overlay.hidden { display: none; }
   #modal-fields label { margin-top: 10px; }
+
+  /* --- 在庫一覧の詳細展開行 --- */
+  .row-toggle-btn {
+    width: 32px; height: 28px; font-size: 1.1rem; line-height: 1; border-radius: 6px;
+    border: 1px solid var(--border); background: #fff; color: var(--text-muted); cursor: pointer;
+  }
+  tr.inventory-detail-row.hidden { display: none; }
+  tr.inventory-detail-row td { border-bottom: 1px solid var(--border); }
 </style>
 </head>
 <body>
@@ -1017,11 +1025,24 @@ function renderInventory() {
       <td class="num stock-cell">${p.stock}</td>
       <td>${escapeHtml(p.location || "-")}</td>
       <td class="actions">
-        <button class="btn small secondary" data-action="edit" data-barcode="${p.barcode}">編集</button>
-        <button class="btn small danger" data-action="delete" data-barcode="${p.barcode}">削除</button>
+        <button class="row-toggle-btn" data-action="toggle" data-barcode="${p.barcode}" title="詳細を開く">&#8942;</button>
       </td>
     `;
     tbody.appendChild(tr);
+
+    const detailTr = document.createElement("tr");
+    detailTr.className = "inventory-detail-row hidden";
+    detailTr.dataset.detailFor = p.barcode;
+    detailTr.innerHTML = `
+      <td colspan="5" style="background:var(--bg); padding:14px 20px;">
+        <div style="display:flex; gap:24px; align-items:center; flex-wrap:wrap;">
+          <div style="font-size:0.82rem; color:var(--text-muted);">在庫少の閾値: <strong style="color:var(--text)">${p.low_stock_threshold}</strong></div>
+          <button class="btn small secondary" data-action="edit" data-barcode="${p.barcode}">編集</button>
+          <button class="btn small danger" data-action="delete" data-barcode="${p.barcode}">削除</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(detailTr);
   });
 }
 
@@ -1070,6 +1091,12 @@ document.getElementById("inventory-body").addEventListener("click", async e => {
   if (!btn) return;
   const barcode = btn.dataset.barcode;
   const product = inventoryRows.find(p => p.barcode === barcode);
+
+  if (btn.dataset.action === "toggle") {
+    const detailRow = document.querySelector(`tr[data-detail-for="${CSS.escape(barcode)}"]`);
+    if (detailRow) detailRow.classList.toggle("hidden");
+    return;
+  }
 
   if (btn.dataset.action === "delete") {
     if (!confirm(`「${product.name}」を削除しますか？`)) return;

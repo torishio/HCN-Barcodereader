@@ -514,7 +514,7 @@ async function createApp(dbConfig, sessionSecret, yahooAppId) {
       const url = new URL("https://shopping.yahooapis.jp/ShoppingWebService/V3/itemSearch");
       url.searchParams.set("appid", yahooAppId);
       url.searchParams.set("jan_code", barcode);
-      url.searchParams.set("results", "10");
+      url.searchParams.set("results", "20");
       const r = await fetch(url);
       if (!r.ok) return res.status(502).json({ message: "検索サービスへの接続に失敗しました" });
       const data = await r.json();
@@ -525,6 +525,9 @@ async function createApp(dbConfig, sessionSecret, yahooAppId) {
         price: h.price,
         url: h.url,
       }));
+      // まとめ買い・ケース販売より単品らしい商品名を優先して表示する
+      const bulkPattern = /ケース|本入|本セット|セット|ダース|まとめ買い|よりどり|選べる|箱入|×\s*\d+|\d+\s*本|\d+\s*個|\d+\s*枚|\d+\s*袋/;
+      items.sort((a, b) => Number(bulkPattern.test(a.name)) - Number(bulkPattern.test(b.name)));
       res.json(items);
     } catch (e) {
       res.status(500).json({ message: "商品検索に失敗しました" });
