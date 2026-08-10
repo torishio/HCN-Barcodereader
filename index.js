@@ -455,7 +455,7 @@ async function createApp(dbConfig, sessionSecret) {
     );
     if (result.affectedRows === 0) return res.status(404).json({ message: "Product not found" });
 
-    await pool.query(
+    const [logResult] = await pool.query(
       "INSERT INTO logs (company_id, barcode, diff, time, user_id) VALUES (?, ?, ?, ?, ?)",
       [companyId, barcode, diff, new Date(), req.session.user.id]
     );
@@ -463,6 +463,30 @@ async function createApp(dbConfig, sessionSecret) {
     const [rows] = await pool.query("SELECT * FROM products WHERE company_id = ? AND barcode = ?", [
       companyId,
       barcode,
+    ]);
+    res.json({ ...rows[0], logId: logResult.insertId });
+  });
+
+  // 直前のスキャンを取り消す（読み取りミス対策）
+  app.post("/scan/undo/:logId", requireCompanyMember, async (req, res) => {
+    const companyId = req.session.user.company_id;
+    const [logRows] = await pool.query("SELECT * FROM logs WHERE id = ? AND company_id = ?", [
+      req.params.logId,
+      companyId,
+    ]);
+    const log = logRows[0];
+    if (!log) return res.status(404).json({ message: "Log not found" });
+
+    await pool.query("UPDATE products SET stock = stock - ? WHERE company_id = ? AND barcode = ?", [
+      log.diff,
+      companyId,
+      log.barcode,
+    ]);
+    await pool.query("DELETE FROM logs WHERE id = ?", [log.id]);
+
+    const [rows] = await pool.query("SELECT * FROM products WHERE company_id = ? AND barcode = ?", [
+      companyId,
+      log.barcode,
     ]);
     res.json(rows[0]);
   });
@@ -473,6 +497,79 @@ async function createApp(dbConfig, sessionSecret) {
       req.session.user.company_id,
     ]);
     res.json(rows);
+  });
+
+  // 在庫のCSVエクスポート
+  app.get("/inventory/export", requireCompanyMember, async (req, res) => {
+    const [rows] = await pool.query("SELECT * FROM products WHERE company_id = ? ORDER BY barcode", [
+      req.session.user.company_id,
+    ]);
+    const csvField = v => {
+      const s = String(v ?? "");
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = ["barcode,name,stock,location,low_stock_threshold"];
+    rows.forEach(r => {
+      lines.push(
+        [r.barcode, r.name, r.stock, r.location, r.low_stock_threshold].map(csvField).join(",")
+      );
+    });
+    const csv = "﻿" + lines.join("\r\n"); // Excel向けにBOM付与
+    res.set("Content-Type", "text/csv; charset=utf-8");
+    res.set("Content-Disposition", `attachment; filename="inventory.csv"`);
+    res.send(csv);
+  });
+
+  // 在庫のCSV一括インポート（本文にCSVテキストをそのまま渡す）
+  app.post("/inventory/import", requireCompanyMember, async (req, res) => {
+    const { csv } = req.body;
+    if (!csv) return res.status(400).json({ message: "csv は必須です" });
+    const companyId = req.session.user.company_id;
+
+    function parseCsvLine(line) {
+      const fields = [];
+      let cur = "";
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (inQuotes) {
+          if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+          else if (c === '"') inQuotes = false;
+          else cur += c;
+        } else if (c === '"') inQuotes = true;
+        else if (c === ",") { fields.push(cur); cur = ""; }
+        else cur += c;
+      }
+      fields.push(cur);
+      return fields;
+    }
+
+    const lines = csv.split(/\r\n|\n/).filter(l => l.trim() !== "");
+    if (lines.length <= 1) return res.status(400).json({ message: "データ行がありません" });
+
+    let imported = 0;
+    const skipped = [];
+    for (const line of lines.slice(1)) {
+      const [barcode, name, stock, location, threshold] = parseCsvLine(line);
+      if (!barcode || !isValidJAN(barcode.trim())) {
+        skipped.push(barcode || "(空欄)");
+        continue;
+      }
+      await pool.query(
+        `INSERT INTO products (company_id, barcode, name, stock, location, low_stock_threshold) VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE name = VALUES(name), stock = VALUES(stock), location = VALUES(location), low_stock_threshold = VALUES(low_stock_threshold)`,
+        [
+          companyId,
+          barcode.trim(),
+          name || "",
+          Number(stock) || 0,
+          location || "",
+          Number(threshold) || 5,
+        ]
+      );
+      imported++;
+    }
+    res.json({ imported, skipped });
   });
 
   // 入出庫履歴

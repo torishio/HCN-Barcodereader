@@ -296,6 +296,7 @@
           <h2 style="margin:0">在庫一覧</h2>
           <div style="display:flex; gap:8px;">
             <input id="inventory-search" placeholder="バーコード・商品名で検索">
+            <button class="btn secondary" id="inventory-export">CSVエクスポート</button>
             <button class="btn secondary" id="inventory-refresh">更新</button>
           </div>
         </div>
@@ -345,6 +346,15 @@
           </div>
         </form>
         <div id="reg-result" class="result"></div>
+      </div>
+      <div class="card" style="margin-top:20px; max-width:640px;">
+        <h2>CSVから一括登録</h2>
+        <p style="color:var(--text-muted); font-size:0.82rem; margin:0 0 10px;">
+          列: barcode, name, stock, location, low_stock_threshold（1行目は見出し行）。既存のバーコードは上書きされます。
+        </p>
+        <input type="file" id="import-file" accept=".csv">
+        <button class="btn" id="import-btn" style="margin-top:10px;">取り込む</button>
+        <div id="import-result" class="result"></div>
       </div>
     </section>
 
@@ -720,7 +730,14 @@ document.getElementById("scan-submit").addEventListener("click", async () => {
   if (!res.ok) {
     scanResult.innerHTML = `<span style="color:var(--ng)">エラー: ${escapeHtml(data.message)}</span>`;
   } else {
-    scanResult.innerHTML = `<span style="color:var(--ok)">更新しました。${escapeHtml(data.name)} の在庫: ${data.stock}</span>`;
+    scanResult.innerHTML = `
+      <span style="color:var(--ok)">更新しました。${escapeHtml(data.name)} の在庫: ${data.stock}</span>
+      <button type="button" class="link-btn" id="scan-undo-btn" style="margin-left:8px; text-decoration:underline;">取り消す</button>
+    `;
+    document.getElementById("scan-undo-btn").addEventListener("click", async () => {
+      await fetch(`${API}/scan/undo/${data.logId}`, { method: "POST" });
+      scanResult.innerHTML = `<span style="color:var(--text-muted)">取り消しました</span>`;
+    });
     scanBarcodeInput.value = "";
     scanDiffInput.value = 1;
     scanValidateMsg.textContent = "";
@@ -812,6 +829,35 @@ function renderInventory() {
 
 document.getElementById("inventory-search").addEventListener("input", renderInventory);
 document.getElementById("inventory-refresh").addEventListener("click", loadInventory);
+document.getElementById("inventory-export").addEventListener("click", () => {
+  window.location.href = `${API}/inventory/export`;
+});
+
+// ================= CSV一括インポート =================
+document.getElementById("import-btn").addEventListener("click", async () => {
+  const fileInput = document.getElementById("import-file");
+  const result = document.getElementById("import-result");
+  const file = fileInput.files[0];
+  if (!file) {
+    result.innerHTML = `<span style="color:var(--ng)">CSVファイルを選択してください</span>`;
+    return;
+  }
+  const text = await file.text();
+  const res = await fetch(`${API}/inventory/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ csv: text }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    result.innerHTML = `<span style="color:var(--ng)">エラー: ${escapeHtml(data.message)}</span>`;
+  } else {
+    const skippedText = data.skipped.length
+      ? `(スキップ: ${data.skipped.map(escapeHtml).join(", ")})` : "";
+    result.innerHTML = `<span style="color:var(--ok)">${data.imported}件取り込みました</span> ${skippedText}`;
+    fileInput.value = "";
+  }
+});
 
 document.querySelectorAll("th[data-sort]").forEach(th => {
   th.addEventListener("click", () => {
