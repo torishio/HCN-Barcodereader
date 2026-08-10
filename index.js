@@ -5,6 +5,7 @@ const session = require("express-session");
 const cors = require("cors");
 const path = require("path");
 const crypto = require("crypto");
+const fs = require("fs");
 
 // JAN/EANチェックディジット計算（bodyは12桁=JAN-13用 または 7桁=JAN-8用）
 function calcCheckDigit(body) {
@@ -28,6 +29,84 @@ function isValidJAN(barcode) {
   return calcCheckDigit(body) === checkDigit;
 }
 
+async function migrate(pool) {
+  // 会社（テナント）
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS companies (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(64) NOT NULL UNIQUE,
+      name VARCHAR(255) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  // グループ（会社内の分類ラベル）
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS \`groups\` (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      company_id BIGINT UNSIGNED NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      UNIQUE KEY uniq_company_group (company_id, name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  // users: company_id / group_id を追加、role に superadmin を追加
+  const [userCols] = await pool.query("SHOW COLUMNS FROM users");
+  const colNames = userCols.map(c => c.Field);
+  if (!colNames.includes("company_id")) {
+    await pool.query("ALTER TABLE users ADD COLUMN company_id BIGINT UNSIGNED NULL");
+  }
+  if (!colNames.includes("group_id")) {
+    await pool.query("ALTER TABLE users ADD COLUMN group_id BIGINT UNSIGNED NULL");
+  }
+  await pool.query("ALTER TABLE users MODIFY COLUMN role ENUM('superadmin','admin','user') NOT NULL DEFAULT 'user'");
+  // ユーザー名は会社単位で一意（別会社なら同じユーザー名可）にする
+  try {
+    await pool.query("ALTER TABLE users DROP INDEX username");
+  } catch (e) {
+    /* もともと無ければ何もしない */
+  }
+  try {
+    await pool.query("ALTER TABLE users ADD UNIQUE KEY uniq_company_username (company_id, username)");
+  } catch (e) {
+    if (!/duplicate/i.test(e.message)) console.error("users unique key migration:", e.message);
+  }
+
+  // 会社に属さない既存adminはシステム管理者に昇格
+  await pool.query("UPDATE users SET role = 'superadmin' WHERE company_id IS NULL AND role = 'admin'");
+
+  // products / logs に company_id を追加し、products の主キーを (company_id, barcode) に変更
+  const [productCols] = await pool.query("SHOW COLUMNS FROM products");
+  const [logCols] = await pool.query("SHOW COLUMNS FROM logs");
+  const productsNeedsMigration = !productCols.some(c => c.Field === "company_id");
+  const logsNeedsMigration = !logCols.some(c => c.Field === "company_id");
+
+  if (productsNeedsMigration) {
+    await pool.query("ALTER TABLE products ADD COLUMN company_id BIGINT UNSIGNED NULL FIRST");
+  }
+  if (logsNeedsMigration) {
+    await pool.query("ALTER TABLE logs ADD COLUMN company_id BIGINT UNSIGNED NULL");
+  }
+
+  if (productsNeedsMigration || logsNeedsMigration) {
+    // 既存データ（会社未設定）はデフォルト会社へ移行する
+    let [defaultCompany] = await pool.query("SELECT * FROM companies WHERE code = 'default'");
+    let defaultCompanyId = defaultCompany[0] && defaultCompany[0].id;
+    if (!defaultCompanyId) {
+      const [result] = await pool.query("INSERT INTO companies (code, name) VALUES ('default', '（移行データ）')");
+      defaultCompanyId = result.insertId;
+    }
+    if (productsNeedsMigration) {
+      await pool.query("UPDATE products SET company_id = ? WHERE company_id IS NULL", [defaultCompanyId]);
+      await pool.query("ALTER TABLE products MODIFY COLUMN company_id BIGINT UNSIGNED NOT NULL");
+      await pool.query("ALTER TABLE products DROP PRIMARY KEY, ADD PRIMARY KEY (company_id, barcode)");
+    }
+    if (logsNeedsMigration) {
+      await pool.query("UPDATE logs SET company_id = ? WHERE company_id IS NULL", [defaultCompanyId]);
+    }
+  }
+}
+
 async function createApp(dbConfig, sessionSecret) {
   const app = express();
   app.use(express.json());
@@ -47,18 +126,22 @@ async function createApp(dbConfig, sessionSecret) {
     connectionLimit: 5,
   });
 
-  // 初回起動時、管理者が1人もいなければ初期管理者を作成する
-  const [existingAdmins] = await pool.query("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'");
-  if (existingAdmins[0].n === 0) {
+  await migrate(pool);
+
+  // 初回起動時、システム管理者が1人もいなければ作成する
+  const [existingSuperadmins] = await pool.query(
+    "SELECT COUNT(*) AS n FROM users WHERE role = 'superadmin'"
+  );
+  if (existingSuperadmins[0].n === 0) {
     const initialPassword = crypto.randomBytes(9).toString("base64").replace(/[/+=]/g, "");
     const hash = await bcrypt.hash(initialPassword, 10);
     await pool.query(
-      "INSERT INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')",
+      "INSERT INTO users (username, password_hash, role, company_id) VALUES ('admin', ?, 'superadmin', NULL)",
       [hash]
     );
     console.log("======================================================");
-    console.log(" 初期管理者アカウントを作成しました");
-    console.log(" username: admin");
+    console.log(" 初期システム管理者アカウントを作成しました");
+    console.log(" username: admin（企業IDは空欄でログイン）");
     console.log(` password: ${initialPassword}`);
     console.log(" ログイン後、必ずパスワードを変更してください");
     console.log("======================================================");
@@ -69,21 +152,63 @@ async function createApp(dbConfig, sessionSecret) {
     next();
   }
 
-  function requireAdmin(req, res, next) {
+  // 会社に所属するユーザー（admin/user）専用。在庫系エンドポイントで使う
+  function requireCompanyMember(req, res, next) {
     if (!req.session.user) return res.status(401).json({ message: "Login required" });
+    if (!req.session.user.company_id) return res.status(403).json({ message: "Company account only" });
+    next();
+  }
+
+  // 会社管理者（自社のみ）。システム管理者もここは通す
+  function requireCompanyAdmin(req, res, next) {
+    if (!req.session.user) return res.status(401).json({ message: "Login required" });
+    if (req.session.user.role === "superadmin") return next();
     if (req.session.user.role !== "admin") return res.status(403).json({ message: "Admin only" });
+    next();
+  }
+
+  function requireSuperadmin(req, res, next) {
+    if (!req.session.user) return res.status(401).json({ message: "Login required" });
+    if (req.session.user.role !== "superadmin") return res.status(403).json({ message: "Superadmin only" });
     next();
   }
 
   // --- 認証 ---
   app.post("/auth/login", async (req, res) => {
-    const { username, password } = req.body;
-    const [rows] = await pool.query("SELECT * FROM users WHERE username = ?", [username]);
+    const { companyCode, username, password } = req.body;
+    let companyId = null;
+
+    if (companyCode) {
+      const [companies] = await pool.query("SELECT * FROM companies WHERE code = ?", [companyCode]);
+      if (!companies[0]) {
+        return res.status(401).json({ message: "企業IDが見つかりません" });
+      }
+      companyId = companies[0].id;
+    }
+
+    const [rows] = await pool.query(
+      companyId
+        ? "SELECT * FROM users WHERE company_id = ? AND username = ?"
+        : "SELECT * FROM users WHERE company_id IS NULL AND username = ?",
+      companyId ? [companyId, username] : [username]
+    );
     const user = rows[0];
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({ message: "ユーザー名またはパスワードが違います" });
     }
-    req.session.user = { id: user.id, username: user.username, role: user.role };
+    let companyName = null;
+    if (user.company_id) {
+      const [c] = await pool.query("SELECT name FROM companies WHERE id = ?", [user.company_id]);
+      companyName = c[0] && c[0].name;
+    }
+    req.session.user = {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      company_id: user.company_id,
+      company_name: companyName,
+      group_id: user.group_id,
+    };
     res.json(req.session.user);
   });
 
@@ -96,24 +221,102 @@ async function createApp(dbConfig, sessionSecret) {
     res.json(req.session.user);
   });
 
-  // --- 管理者: ユーザー管理 ---
-  app.get("/admin/users", requireAdmin, async (req, res) => {
-    const [rows] = await pool.query("SELECT id, username, role, created_at FROM users ORDER BY id");
+  // --- システム管理者: 会社管理 ---
+  app.get("/superadmin/companies", requireSuperadmin, async (req, res) => {
+    const [rows] = await pool.query("SELECT * FROM companies ORDER BY id");
     res.json(rows);
   });
 
-  app.post("/admin/users", requireAdmin, async (req, res) => {
-    const { username, password, role } = req.body;
+  app.post("/superadmin/companies", requireSuperadmin, async (req, res) => {
+    const { code, name, adminUsername, adminPassword } = req.body;
+    if (!code || !name || !adminUsername || !adminPassword) {
+      return res.status(400).json({ message: "code, name, adminUsername, adminPassword は必須です" });
+    }
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [result] = await conn.query("INSERT INTO companies (code, name) VALUES (?, ?)", [code, name]);
+      const hash = await bcrypt.hash(adminPassword, 10);
+      await conn.query(
+        "INSERT INTO users (username, password_hash, role, company_id) VALUES (?, ?, 'admin', ?)",
+        [adminUsername, hash, result.insertId]
+      );
+      await conn.commit();
+      res.json({ message: "Company created" });
+    } catch (err) {
+      await conn.rollback();
+      if (err.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({ message: "その企業ID、もしくは管理者ユーザー名は既に使われています" });
+      }
+      res.status(500).json({ message: err.message });
+    } finally {
+      conn.release();
+    }
+  });
+
+  app.delete("/superadmin/companies/:id", requireSuperadmin, async (req, res) => {
+    await pool.query("DELETE FROM companies WHERE id = ?", [req.params.id]);
+    await pool.query("DELETE FROM users WHERE company_id = ?", [req.params.id]);
+    await pool.query("DELETE FROM \`groups\` WHERE company_id = ?", [req.params.id]);
+    await pool.query("DELETE FROM products WHERE company_id = ?", [req.params.id]);
+    await pool.query("DELETE FROM logs WHERE company_id = ?", [req.params.id]);
+    res.json({ message: "Deleted" });
+  });
+
+  // --- 会社管理者: グループ管理 ---
+  app.get("/admin/groups", requireCompanyAdmin, async (req, res) => {
+    const companyId = req.query.companyId || req.session.user.company_id;
+    if (!companyId) return res.status(400).json({ message: "companyId が必要です" });
+    const [rows] = await pool.query("SELECT * FROM \`groups\` WHERE company_id = ? ORDER BY id", [companyId]);
+    res.json(rows);
+  });
+
+  app.post("/admin/groups", requireCompanyAdmin, async (req, res) => {
+    const companyId = req.session.user.company_id || req.body.companyId;
+    const { name } = req.body;
+    if (!companyId || !name) return res.status(400).json({ message: "name は必須です" });
+    try {
+      await pool.query("INSERT INTO \`groups\` (company_id, name) VALUES (?, ?)", [companyId, name]);
+      res.json({ message: "Group created" });
+    } catch (err) {
+      if (err.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({ message: "同じ名前のグループが既にあります" });
+      }
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/admin/groups/:id", requireCompanyAdmin, async (req, res) => {
+    await pool.query("DELETE FROM \`groups\` WHERE id = ?", [req.params.id]);
+    res.json({ message: "Deleted" });
+  });
+
+  // --- 会社管理者: ユーザー管理（自社のみ） ---
+  app.get("/admin/users", requireCompanyAdmin, async (req, res) => {
+    const companyId = req.session.user.company_id;
+    if (!companyId) return res.status(400).json({ message: "システム管理者はこのAPIを使えません" });
+    const [rows] = await pool.query(
+      `SELECT users.id, users.username, users.role, users.created_at, \`groups\`.name AS group_name
+       FROM users LEFT JOIN \`groups\` ON users.group_id = \`groups\`.id
+       WHERE users.company_id = ? ORDER BY users.id`,
+      [companyId]
+    );
+    res.json(rows);
+  });
+
+  app.post("/admin/users", requireCompanyAdmin, async (req, res) => {
+    const companyId = req.session.user.company_id;
+    if (!companyId) return res.status(400).json({ message: "システム管理者はこのAPIを使えません" });
+    const { username, password, role, groupId } = req.body;
     if (!username || !password) {
       return res.status(400).json({ message: "username, password は必須です" });
     }
     const hash = await bcrypt.hash(password, 10);
     try {
-      await pool.query("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", [
-        username,
-        hash,
-        role === "admin" ? "admin" : "user",
-      ]);
+      await pool.query(
+        "INSERT INTO users (username, password_hash, role, company_id, group_id) VALUES (?, ?, ?, ?, ?)",
+        [username, hash, role === "admin" ? "admin" : "user", companyId, groupId || null]
+      );
       res.json({ message: "User created" });
     } catch (err) {
       if (err.code === "ER_DUP_ENTRY") {
@@ -123,13 +326,16 @@ async function createApp(dbConfig, sessionSecret) {
     }
   });
 
-  app.put("/admin/users/:id", requireAdmin, async (req, res) => {
-    const { role, password } = req.body;
+  app.put("/admin/users/:id", requireCompanyAdmin, async (req, res) => {
+    const { role, password, groupId } = req.body;
     if (role) {
       await pool.query("UPDATE users SET role = ? WHERE id = ?", [
         role === "admin" ? "admin" : "user",
         req.params.id,
       ]);
+    }
+    if (groupId !== undefined) {
+      await pool.query("UPDATE users SET group_id = ? WHERE id = ?", [groupId || null, req.params.id]);
     }
     if (password) {
       const hash = await bcrypt.hash(password, 10);
@@ -138,7 +344,7 @@ async function createApp(dbConfig, sessionSecret) {
     res.json({ message: "Updated" });
   });
 
-  app.delete("/admin/users/:id", requireAdmin, async (req, res) => {
+  app.delete("/admin/users/:id", requireCompanyAdmin, async (req, res) => {
     if (Number(req.params.id) === req.session.user.id) {
       return res.status(400).json({ message: "自分自身は削除できません" });
     }
@@ -151,14 +357,13 @@ async function createApp(dbConfig, sessionSecret) {
     res.json({ status: "barcode API server running" });
   });
 
-  // クライアントの更新チェック用（デプロイのたびに version.json を更新する）
-  app.get("/api/latest-version", async (req, res) => {
+  // クライアントの更新チェック・お知らせ用（デプロイのたびに changelog.json を更新する）
+  app.get("/api/changelog", (req, res) => {
     try {
-      const fs = require("fs");
-      const data = JSON.parse(fs.readFileSync(path.join(__dirname, "version.json"), "utf8"));
+      const data = JSON.parse(fs.readFileSync(path.join(__dirname, "changelog.json"), "utf8"));
       res.json(data);
     } catch (e) {
-      res.json({ sha: null, message: "", date: null });
+      res.json([]);
     }
   });
 
@@ -176,15 +381,19 @@ async function createApp(dbConfig, sessionSecret) {
   });
 
   // 商品取得
-  app.get("/products/:barcode", requireAuth, async (req, res) => {
-    const [rows] = await pool.query("SELECT * FROM products WHERE barcode = ?", [req.params.barcode]);
+  app.get("/products/:barcode", requireCompanyMember, async (req, res) => {
+    const [rows] = await pool.query("SELECT * FROM products WHERE company_id = ? AND barcode = ?", [
+      req.session.user.company_id,
+      req.params.barcode,
+    ]);
     if (!rows[0]) return res.status(404).json({ message: "Not found" });
     res.json(rows[0]);
   });
 
   // 商品登録
-  app.post("/products", requireAuth, async (req, res) => {
+  app.post("/products", requireCompanyMember, async (req, res) => {
     const { barcode, name, stock, location, low_stock_threshold } = req.body;
+    const companyId = req.session.user.company_id;
 
     if (!isValidJAN(barcode)) {
       return res.status(400).json({
@@ -193,37 +402,46 @@ async function createApp(dbConfig, sessionSecret) {
     }
 
     await pool.query(
-      `INSERT INTO products (barcode, name, stock, location, low_stock_threshold) VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO products (company_id, barcode, name, stock, location, low_stock_threshold) VALUES (?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE name = VALUES(name), stock = VALUES(stock), location = VALUES(location), low_stock_threshold = VALUES(low_stock_threshold)`,
-      [barcode, name, stock ?? 0, location ?? "", low_stock_threshold ?? 5]
+      [companyId, barcode, name, stock ?? 0, location ?? "", low_stock_threshold ?? 5]
     );
     res.json({ message: "Product saved" });
   });
 
   // 商品情報の編集（名称・場所・低在庫しきい値）
-  app.put("/products/:barcode", requireAuth, async (req, res) => {
+  app.put("/products/:barcode", requireCompanyMember, async (req, res) => {
     const { barcode } = req.params;
     const { name, location, low_stock_threshold } = req.body;
+    const companyId = req.session.user.company_id;
 
     const [result] = await pool.query(
-      "UPDATE products SET name = ?, location = ?, low_stock_threshold = ? WHERE barcode = ?",
-      [name, location ?? "", low_stock_threshold ?? 5, barcode]
+      "UPDATE products SET name = ?, location = ?, low_stock_threshold = ? WHERE company_id = ? AND barcode = ?",
+      [name, location ?? "", low_stock_threshold ?? 5, companyId, barcode]
     );
     if (result.affectedRows === 0) return res.status(404).json({ message: "Product not found" });
-    const [rows] = await pool.query("SELECT * FROM products WHERE barcode = ?", [barcode]);
+    const [rows] = await pool.query("SELECT * FROM products WHERE company_id = ? AND barcode = ?", [
+      companyId,
+      barcode,
+    ]);
     res.json(rows[0]);
   });
 
   // 商品削除
-  app.delete("/products/:barcode", requireAuth, async (req, res) => {
-    const [result] = await pool.query("DELETE FROM products WHERE barcode = ?", [req.params.barcode]);
+  app.delete("/products/:barcode", requireCompanyMember, async (req, res) => {
+    const companyId = req.session.user.company_id;
+    const [result] = await pool.query("DELETE FROM products WHERE company_id = ? AND barcode = ?", [
+      companyId,
+      req.params.barcode,
+    ]);
     if (result.affectedRows === 0) return res.status(404).json({ message: "Product not found" });
     res.json({ message: "Product deleted" });
   });
 
   // スキャン（在庫増減）
-  app.post("/scan", requireAuth, async (req, res) => {
+  app.post("/scan", requireCompanyMember, async (req, res) => {
     const { barcode, diff } = req.body;
+    const companyId = req.session.user.company_id;
 
     if (!isValidJAN(barcode)) {
       return res.status(400).json({
@@ -231,36 +449,41 @@ async function createApp(dbConfig, sessionSecret) {
       });
     }
 
-    const [result] = await pool.query("UPDATE products SET stock = stock + ? WHERE barcode = ?", [
-      diff,
-      barcode,
-    ]);
+    const [result] = await pool.query(
+      "UPDATE products SET stock = stock + ? WHERE company_id = ? AND barcode = ?",
+      [diff, companyId, barcode]
+    );
     if (result.affectedRows === 0) return res.status(404).json({ message: "Product not found" });
 
-    await pool.query("INSERT INTO logs (barcode, diff, time, user_id) VALUES (?, ?, ?, ?)", [
-      barcode,
-      diff,
-      new Date(),
-      req.session.user.id,
-    ]);
+    await pool.query(
+      "INSERT INTO logs (company_id, barcode, diff, time, user_id) VALUES (?, ?, ?, ?, ?)",
+      [companyId, barcode, diff, new Date(), req.session.user.id]
+    );
 
-    const [rows] = await pool.query("SELECT * FROM products WHERE barcode = ?", [barcode]);
+    const [rows] = await pool.query("SELECT * FROM products WHERE company_id = ? AND barcode = ?", [
+      companyId,
+      barcode,
+    ]);
     res.json(rows[0]);
   });
 
   // 在庫一覧
-  app.get("/inventory", requireAuth, async (req, res) => {
-    const [rows] = await pool.query("SELECT * FROM products ORDER BY barcode");
+  app.get("/inventory", requireCompanyMember, async (req, res) => {
+    const [rows] = await pool.query("SELECT * FROM products WHERE company_id = ? ORDER BY barcode", [
+      req.session.user.company_id,
+    ]);
     res.json(rows);
   });
 
   // 入出庫履歴
-  app.get("/logs", requireAuth, async (req, res) => {
+  app.get("/logs", requireCompanyMember, async (req, res) => {
     const [rows] = await pool.query(
       `SELECT logs.*, products.name, users.username FROM logs
-       LEFT JOIN products ON logs.barcode = products.barcode
+       LEFT JOIN products ON logs.company_id = products.company_id AND logs.barcode = products.barcode
        LEFT JOIN users ON logs.user_id = users.id
-       ORDER BY logs.id DESC LIMIT 200`
+       WHERE logs.company_id = ?
+       ORDER BY logs.id DESC LIMIT 200`,
+      [req.session.user.company_id]
     );
     res.json(rows);
   });
@@ -284,7 +507,6 @@ if (require.main === module) {
   createApp(dbConfig, sessionSecret).then(app => {
     if (process.env.HTTPS_KEY && process.env.HTTPS_CERT) {
       const https = require("https");
-      const fs = require("fs");
       https
         .createServer(
           {
