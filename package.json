@@ -1,6 +1,6 @@
 {
   "name": "barcode-api-server",
-  "version": "1.5.1",
+  "version": "1.6.3",
   "description": "",
   "main": "main.js",
   "scripts": {
@@ -29,7 +29,7 @@
     "appId": "com.torishio.barcode-inventory",
     "productName": "バーコード在庫管理",
     "directories": {
-      "output": "release10"
+      "output": "release11"
     },
     "files": [
       "main.js",
