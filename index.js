@@ -6,6 +6,7 @@ const cors = require("cors");
 const path = require("path");
 const crypto = require("crypto");
 const fs = require("fs");
+const rateLimit = require("express-rate-limit");
 
 // JAN/EANチェックディジット計算（bodyは12桁=JAN-13用 または 7桁=JAN-8用）
 function calcCheckDigit(body) {
@@ -180,7 +181,16 @@ async function createApp(dbConfig, sessionSecret, yahooAppId) {
   }
 
   // --- 認証 ---
-  app.post("/auth/login", async (req, res) => {
+  // ブルートフォース対策：同一IPからの連続ログイン試行を制限する
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: "ログイン試行回数が多すぎます。しばらくしてから再度お試しください" },
+  });
+
+  app.post("/auth/login", loginLimiter, async (req, res) => {
     const { companyCode, username, password } = req.body;
     let companyId = null;
 
