@@ -163,6 +163,11 @@
   .overlay-box h1 { font-size: 1.2rem; margin: 0 0 4px; }
   .overlay-box p { color: var(--text-muted); font-size: 0.82rem; margin: 0 0 16px; }
   .overlay-box label { margin-top: 12px; }
+  .home-box {
+    width: 480px; max-height: 80vh;
+    display: flex; flex-direction: column;
+  }
+  .changelog-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
   #app-root.hidden { display: none; }
   .link-btn {
     background: none; border: none; color: #94a3b8; font-size: 0.78rem; cursor: pointer; padding: 0; margin-bottom: 14px;
@@ -202,13 +207,15 @@
 </head>
 <body>
 
-<!-- ホーム画面（起動直後に表示。ログインはここから） -->
+<!-- ホーム画面（起動直後に表示。ログインはメニューから） -->
 <div id="home-screen" class="overlay-screen">
-  <div class="overlay-box" style="width:440px;">
-    <h1>バーコード在庫管理</h1>
+  <div class="overlay-box home-box">
+    <div style="display:flex; align-items:center; justify-content:space-between;">
+      <h1 style="margin:0;">バーコード在庫管理</h1>
+      <button id="home-enter-btn" class="btn small">ログイン</button>
+    </div>
     <p>更新情報</p>
-    <div id="changelog-list"><div class="msg">読み込み中...</div></div>
-    <button id="home-enter-btn" class="btn" style="width:100%; margin-top:18px;">ログイン</button>
+    <div id="changelog-list" class="changelog-scroll"><div class="msg">読み込み中...</div></div>
   </div>
 </div>
 
