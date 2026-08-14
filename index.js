@@ -525,7 +525,7 @@ async function createApp(dbConfig, sessionSecret, yahooAppId) {
       url.searchParams.set("appid", yahooAppId);
       url.searchParams.set("jan_code", barcode);
       url.searchParams.set("results", "20");
-      const r = await fetch(url);
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) return res.status(502).json({ message: "検索サービスへの接続に失敗しました" });
       const data = await r.json();
       const items = (data.hits || []).map(h => ({

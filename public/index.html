@@ -641,6 +641,43 @@ async function promptModal(label, defaultValue = "") {
   return result ? result.value : null;
 }
 
+// alert() / confirm() の簡易置き換え（Electronのネイティブダイアログは使わない）
+function messageModal(title, message, { showCancel } = {}) {
+  return new Promise(resolve => {
+    modalTitle.textContent = title;
+    modalFields.innerHTML = "";
+    modalMsg.className = "msg";
+    modalMsg.textContent = message;
+    modalCancel.style.display = showCancel ? "" : "none";
+    modalOverlay.classList.remove("hidden");
+    modalOk.focus();
+
+    function cleanup(result) {
+      modalOverlay.classList.add("hidden");
+      modalCancel.style.display = "";
+      modalOk.removeEventListener("click", onOk);
+      modalCancel.removeEventListener("click", onCancel);
+      document.removeEventListener("keydown", onKeydown);
+      resolve(result);
+    }
+    function onOk() { cleanup(true); }
+    function onCancel() { cleanup(false); }
+    function onKeydown(e) {
+      if (e.key === "Enter") { e.preventDefault(); onOk(); }
+      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+    }
+    modalOk.addEventListener("click", onOk);
+    modalCancel.addEventListener("click", onCancel);
+    document.addEventListener("keydown", onKeydown);
+  });
+}
+function alertModal(message, title = "お知らせ") {
+  return messageModal(title, message, { showCancel: false });
+}
+function confirmModal(message, title = "確認") {
+  return messageModal(title, message, { showCancel: true });
+}
+
 const PAGE_TITLES = {
   dashboard: "ダッシュボード",
   scan: "スキャン",
@@ -943,12 +980,12 @@ document.getElementById("reg-lookup-btn").addEventListener("click", async () => 
     const res = await fetch(`${API}/barcode/${encodeURIComponent(barcode)}/lookup`);
     const data = await res.json();
     if (!res.ok) {
-      alert(data.message || "検索に失敗しました");
+      await alertModal(data.message || "検索に失敗しました");
       return;
     }
     lookupResults = data;
     if (!data.length) {
-      alert("該当する商品が見つかりませんでした");
+      await alertModal("該当する商品が見つかりませんでした");
       lookupPanel.style.display = "none";
       return;
     }
@@ -1106,7 +1143,7 @@ document.getElementById("inventory-body").addEventListener("click", async e => {
   }
 
   if (btn.dataset.action === "delete") {
-    if (!confirm(`「${product.name}」を削除しますか？`)) return;
+    if (!(await confirmModal(`「${product.name}」を削除しますか？`))) return;
     await fetch(`${API}/products/${encodeURIComponent(barcode)}`, { method: "DELETE" });
     loadInventory();
   }
@@ -1221,7 +1258,7 @@ document.getElementById("users-body").addEventListener("click", async e => {
   const name = btn.dataset.name;
 
   if (btn.dataset.action === "delete-user") {
-    if (!confirm(`ユーザー「${name}」を削除しますか？`)) return;
+    if (!(await confirmModal(`ユーザー「${name}」を削除しますか？`))) return;
     await fetch(`${API}/admin/users/${id}`, { method: "DELETE" });
     loadUsers();
   }
@@ -1236,7 +1273,7 @@ document.getElementById("users-body").addEventListener("click", async e => {
     });
     if (!res.ok) {
       const data = await res.json();
-      alert(data.message);
+      await alertModal(data.message);
     }
     loadUsers();
   }
@@ -1249,7 +1286,7 @@ document.getElementById("users-body").addEventListener("click", async e => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password }),
     });
-    alert("パスワードを更新しました");
+    await alertModal("パスワードを更新しました");
   }
 });
 
@@ -1299,7 +1336,7 @@ document.getElementById("groups-body").addEventListener("click", async e => {
   const id = btn.dataset.id;
 
   if (btn.dataset.action === "delete") {
-    if (!confirm("このグループを削除しますか？")) return;
+    if (!(await confirmModal("このグループを削除しますか？"))) return;
     await fetch(`${API}/admin/groups/${id}`, { method: "DELETE" });
     loadGroups();
   }
@@ -1397,7 +1434,7 @@ document.getElementById("companies-body").addEventListener("click", async e => {
   const id = btn.dataset.id;
 
   if (btn.dataset.action === "delete") {
-    if (!confirm(`会社「${btn.dataset.name}」を削除しますか？(所属ユーザー・在庫データも全て削除されます)`)) return;
+    if (!(await confirmModal(`会社「${btn.dataset.name}」を削除しますか？(所属ユーザー・在庫データも全て削除されます)`))) return;
     await fetch(`${API}/superadmin/companies/${id}`, { method: "DELETE" });
     loadCompanies();
   }
@@ -1444,7 +1481,7 @@ document.getElementById("all-users-body").addEventListener("click", async e => {
   const name = btn.dataset.name;
 
   if (btn.dataset.action === "delete") {
-    if (!confirm(`ユーザー「${name}」を削除しますか？`)) return;
+    if (!(await confirmModal(`ユーザー「${name}」を削除しますか？`))) return;
     await fetch(`${API}/superadmin/users/${id}`, { method: "DELETE" });
     loadAllUsers();
   }
@@ -1457,7 +1494,7 @@ document.getElementById("all-users-body").addEventListener("click", async e => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password }),
     });
-    alert("パスワードを更新しました");
+    await alertModal("パスワードを更新しました");
   }
 });
 
